@@ -1,0 +1,12 @@
+{
+  "name": "compras-proxy",
+  "version": "1.0.0",
+  "description": "Proxy para o app de compras - GSB Software API + Supabase",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
