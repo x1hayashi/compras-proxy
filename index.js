@@ -3,7 +3,7 @@ const https  = require("https");
 const url    = require("url");
 const crypto = require("crypto");
 
-// ── CONFIG (mesmos valores usados no proxy da oficina) ──────
+// ── CONFIG ────────────────────────────────────────────────
 const GSB_HOST  = "api-normalizada.gsbsoftware.com.br";
 const GSB_AUTH  = "Basic " + Buffer.from(
   (process.env.GSB_USER || "hayashi") + ":" + (process.env.GSB_PASS || "cpjlk54*#spl89")
@@ -14,13 +14,12 @@ const PORT      = process.env.PORT || 3000;
 
 const SB_URL_RAW = process.env.SUPABASE_URL;
 const SB_KEY      = process.env.SUPABASE_KEY;
-
 if (!SB_URL_RAW || !SB_KEY) {
-  console.warn("ATENÇÃO: defina SUPABASE_URL e SUPABASE_KEY (mesmas do app da oficina) nas env vars do Render.");
+  console.warn("ATENÇÃO: defina SUPABASE_URL e SUPABASE_KEY nas env vars do Render.");
 }
-
-// Extrai só o hostname, mesmo que a env var venha com /rest/v1/ ou barra no final por engano
 const SB_HOSTNAME = SB_URL_RAW ? SB_URL_RAW.replace(/^https?:\/\//, "").split("/")[0] : "";
+
+const FILIAIS_PERMITIDAS = ["HGO", "HBA"];
 
 // ── SUPABASE REST HELPER ─────────────────────────────────────
 function sbReq(method, table, body, query) {
@@ -58,7 +57,7 @@ const sbInsert = (table, body)  => sbReq("POST", table, body);
 const sbPatch  = (table, body, query) => sbReq("PATCH", table, body, query);
 const sbDelete = (table, query) => sbReq("DELETE", table, null, query);
 
-// ── AUTH / SESSÃO (mesmo esquema do app da oficina) ──────────
+// ── AUTH / SESSÃO ─────────────────────────────────────────
 function sha256(s) { return crypto.createHash("sha256").update(s + "gsb2026").digest("hex"); }
 function limparWhats(w) { return (w || "").replace(/\D/g, ""); }
 
@@ -73,27 +72,17 @@ async function getSession(req) {
   return sess.usuarios;
 }
 
-// ── GSB PROXY (GET only, com cache em memória) ────────────────
-const cache = new Map(); // path -> {data, ts}
-const CACHE_MS = 5 * 60 * 1000; // 5 min
-
-function gsbGet(gsbPath) {
-  if (cache.has(gsbPath)) {
-    const c = cache.get(gsbPath);
-    if (Date.now() - c.ts < CACHE_MS) return Promise.resolve(c.data);
-  }
+// ── GSB (GET only) ─────────────────────────────────────────
+function gsbGet(nome) {
   return new Promise((resolve, reject) => {
+    const gsbPath = `/${nome}/${GSB_CLI}/${encodeURIComponent(GSB_TOK)}`;
     const req = https.request(
       { hostname: GSB_HOST, path: gsbPath, method: "GET", headers: { Authorization: GSB_AUTH } },
       (res) => {
         let chunks = "";
         res.on("data", (c) => (chunks += c));
         res.on("end", () => {
-          try {
-            const data = JSON.parse(chunks);
-            cache.set(gsbPath, { data, ts: Date.now() });
-            resolve(data);
-          } catch (e) { reject(e); }
+          try { resolve(JSON.parse(chunks)); } catch (e) { reject(e); }
         });
       }
     );
@@ -102,8 +91,59 @@ function gsbGet(gsbPath) {
   });
 }
 
-// intervalo amplo, cadastros mudam pouco
-function cadastroPath(nome) { return `/${nome}/${GSB_CLI}/${encodeURIComponent(GSB_TOK)}`; }
+// ── CACHE "QUENTE" DOS CADASTROS ──────────────────────────
+// Carrega uma vez no início e atualiza em segundo plano — as buscas do usuário
+// nunca esperam o GSB responder, só leem o que já está em memória.
+let CACHE = {
+  produtos: [],       // [{idProduto, nome: "NOMEPRODUTO-VARIEDADE", unidade, idUnidade}]
+  filiais: [],        // já filtradas para HGO/HBA
+  setores: [],
+  atualizadoEm: null,
+  atualizando: false,
+};
+
+async function atualizarCache() {
+  if (CACHE.atualizando) return;
+  CACHE.atualizando = true;
+  try {
+    const [produtos, nomes, variedades, unidades, filiais, setores] = await Promise.all([
+      gsbGet("produtos"),
+      gsbGet("produtosnomes"),
+      gsbGet("produtosvariedades"),
+      gsbGet("unidades"),
+      gsbGet("filiais"),
+      gsbGet("setores"),
+    ]);
+
+    const nomeMap = new Map((nomes || []).map((n) => [String(n.idNomeProduto), n.nomeProduto]));
+    const varMap = new Map((variedades || []).map((v) => [String(v.idVariedade), v.nomeVariedade]));
+    const unidMap = new Map((unidades || []).map((u) => [String(u.idUnidade), u.siglaUnidade || u.nomeUnidade]));
+
+    CACHE.produtos = (produtos || []).map((p) => {
+      const nomeBase = nomeMap.get(String(p.idNomeProduto)) || `Produto ${p.idProduto}`;
+      const variedade = p.idVariedade ? varMap.get(String(p.idVariedade)) : null;
+      const nomeCompleto = variedade ? `${nomeBase}-${variedade}` : nomeBase;
+      return {
+        idProduto: p.idProduto,
+        nome: nomeCompleto,
+        idUnidade: p.idUnidade,
+        unidade: unidMap.get(String(p.idUnidade)) || "",
+      };
+    });
+
+    CACHE.filiais = (filiais || []).filter((f) => FILIAIS_PERMITIDAS.includes((f.siglaFilial || "").toUpperCase()));
+    CACHE.setores = setores || [];
+    CACHE.atualizadoEm = new Date().toISOString();
+    console.log(`Cache atualizado: ${CACHE.produtos.length} produtos, ${CACHE.filiais.length} filiais, ${CACHE.setores.length} setores`);
+  } catch (e) {
+    console.error("Erro ao atualizar cache do GSB:", e.message);
+  } finally {
+    CACHE.atualizando = false;
+  }
+}
+
+atualizarCache(); // carrega já na subida do servidor
+setInterval(atualizarCache, 6 * 60 * 60 * 1000); // atualiza a cada 6 horas
 
 // ── HELPERS HTTP ───────────────────────────────────────────
 function json(res, status, obj) {
@@ -131,7 +171,7 @@ http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") return json(res, 200, {});
 
   try {
-    // ── LOGIN (reaproveita usuarios da oficina) ──────────────
+    // ── LOGIN ─────────────────────────────────────────────
     if (req.method === "POST" && p === "/login") {
       const { whatsapp, senha } = await readBody(req);
       const whatsClean = limparWhats(whatsapp);
@@ -145,7 +185,6 @@ http.createServer(async (req, res) => {
       return json(res, 200, { token, user });
     }
 
-    // ── SESSÃO ATUAL ─────────────────────────────────────────
     if (req.method === "GET" && p === "/me") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
@@ -153,62 +192,45 @@ http.createServer(async (req, res) => {
       return json(res, 200, user);
     }
 
-    // ── CADASTROS DO GSB (cache, só leitura) ─────────────────
+    // ── CADASTROS (em cache, resposta instantânea) ─────────
     if (req.method === "GET" && p === "/gsb/filiais") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
-      return json(res, 200, await gsbGet(cadastroPath("filiais")));
+      return json(res, 200, CACHE.filiais);
     }
     if (req.method === "GET" && p === "/gsb/setores") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
-      return json(res, 200, await gsbGet(cadastroPath("setores")));
+      const idFilial = parsed.query.idFilial;
+      const lista = idFilial ? CACHE.setores.filter((s) => String(s.idFilial) === String(idFilial)) : CACHE.setores;
+      return json(res, 200, lista);
     }
-    if (req.method === "GET" && p === "/gsb/funcionarios") {
-      const user = await getSession(req);
-      if (!user) return json(res, 401, { error: "Não autenticado" });
-      return json(res, 200, await gsbGet(cadastroPath("funcionarios")));
-    }
-
-    // ── BUSCA DE PRODUTO (autocomplete: junta produtos + produtosnomes) ──
     if (req.method === "GET" && p === "/gsb/produtos-busca") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
       const q = (parsed.query.q || "").toString().trim().toLowerCase();
       if (q.length < 2) return json(res, 200, []);
-
-      const [produtos, nomes] = await Promise.all([
-        gsbGet(cadastroPath("produtos")),
-        gsbGet(cadastroPath("produtosnomes")),
-      ]);
-      const nomeMap = new Map((nomes || []).map((n) => [String(n.idNomeProduto), n.nomeProduto]));
-      const resultados = (produtos || [])
-        .map((prod) => ({
-          idProduto: prod.idProduto,
-          nome: nomeMap.get(String(prod.idNomeProduto)) || `Produto ${prod.idProduto}`,
-          idUnidade: prod.idUnidade,
-        }))
-        .filter((p2) => p2.nome.toLowerCase().includes(q))
-        .slice(0, 30);
+      const resultados = CACHE.produtos.filter((p2) => p2.nome.toLowerCase().includes(q)).slice(0, 30);
       return json(res, 200, resultados);
     }
+    if (req.method === "POST" && p === "/gsb/atualizar-cache") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      atualizarCache();
+      return json(res, 200, { ok: true, iniciado: true });
+    }
 
-    // ── SOLICITAÇÕES DE COMPRA (Supabase) ────────────────────
+    // ── SOLICITAÇÕES DE COMPRA ────────────────────────────
     if (req.method === "GET" && p === "/solicitacoes") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
-
       const filtro = user.admin ? "" : `&user_id=eq.${user.id}`;
       const cabecalhos = await sbGet("solicitacoescompras", `select=*${filtro}&order=criado_em.desc`);
       const ids = (cabecalhos || []).map((c) => c.id);
       let itens = [];
-      if (ids.length) {
-        itens = await sbGet("solicitacoescompras_itens", `solicitacao_id=in.(${ids.join(",")})`);
-      }
+      if (ids.length) itens = await sbGet("solicitacoescompras_itens", `solicitacao_id=in.(${ids.join(",")})`);
       const porSolic = {};
-      (itens || []).forEach((it) => {
-        (porSolic[it.solicitacao_id] = porSolic[it.solicitacao_id] || []).push(it);
-      });
+      (itens || []).forEach((it) => (porSolic[it.solicitacao_id] = porSolic[it.solicitacao_id] || []).push(it));
       const out = (cabecalhos || []).map((c) => ({ ...c, itens: porSolic[c.id] || [] }));
       return json(res, 200, out);
     }
@@ -250,13 +272,11 @@ http.createServer(async (req, res) => {
       if (!user) return json(res, 401, { error: "Não autenticado" });
       const id = p.split("/")[2];
       const body = await readBody(req);
-
       const upd = {};
       if (body.status) upd.status = body.status;
       if (body.id_comprador) { upd.id_comprador = body.id_comprador; upd.comprador_nome = user.nome; }
       if (body.numero_solicitacao_gsb) upd.numero_solicitacao_gsb = body.numero_solicitacao_gsb;
       if (body.id_solicitacao_compra_gsb) upd.id_solicitacao_compra_gsb = body.id_solicitacao_compra_gsb;
-
       await sbPatch("solicitacoescompras", upd, `id=eq.${id}`);
       return json(res, 200, { ok: true });
     }
@@ -265,9 +285,62 @@ http.createServer(async (req, res) => {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
       const id = p.split("/")[2];
-      // só permite apagar a própria solicitação pendente (ou admin apaga qualquer uma)
       const filtro = user.admin ? `id=eq.${id}` : `id=eq.${id}&user_id=eq.${user.id}&status=eq.pendente`;
       await sbDelete("solicitacoescompras", filtro);
+      return json(res, 200, { ok: true });
+    }
+
+    // ── CONFIG (responsável que recebe as solicitações via WhatsApp) ──
+    // Qualquer usuário logado pode LER quem é o responsável (precisa do nome/whatsapp p/ enviar).
+    if (req.method === "GET" && p === "/config/responsavel") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      const cfgRows = await sbGet("config", `chave=eq.responsavelComprasId`);
+      const id = cfgRows && cfgRows[0] && cfgRows[0].valor;
+      if (!id) return json(res, 200, null);
+      const uRows = await sbGet("usuarios", `id=eq.${id}&select=id,nome,whatsapp`);
+      return json(res, 200, (uRows && uRows[0]) || null);
+    }
+
+    // Só admin pode TROCAR quem é o responsável
+    if (req.method === "PUT" && p === "/config/responsavel") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const body = await readBody(req);
+      const existe = await sbGet("config", `chave=eq.responsavelComprasId`);
+      if (existe && existe[0]) {
+        await sbPatch("config", { valor: String(body.user_id) }, `chave=eq.responsavelComprasId`);
+      } else {
+        await sbInsert("config", { chave: "responsavelComprasId", valor: String(body.user_id) });
+      }
+      return json(res, 200, { ok: true });
+    }
+
+    // ── ADMIN: gestão de usuários (mesma tabela da oficina) ──
+    if (req.method === "GET" && p === "/admin/usuarios") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const rows = await sbGet("usuarios", `select=id,nome,whatsapp,filial,status,admin&order=nome.asc`);
+      return json(res, 200, rows || []);
+    }
+
+    if (req.method === "PUT" && p.startsWith("/admin/usuarios/")) {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const id = p.split("/")[3];
+      const body = await readBody(req);
+      const upd = {};
+      if (body.status) upd.status = body.status;
+      if (typeof body.admin === "boolean") upd.admin = body.admin;
+      await sbPatch("usuarios", upd, `id=eq.${id}`);
+      return json(res, 200, { ok: true });
+    }
+
+    if (req.method === "DELETE" && p.startsWith("/admin/usuarios/")) {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const id = p.split("/")[3];
+      await sbDelete("usuarios", `id=eq.${id}`);
       return json(res, 200, { ok: true });
     }
 
