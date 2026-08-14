@@ -244,6 +244,7 @@ http.createServer(async (req, res) => {
       const cab = await sbInsert("solicitacoescompras", {
         id_filial: body.id_filial || null,
         filial_nome: body.filial_nome || null,
+        filial_sigla: body.filial_sigla || null,
         id_setor: body.id_setor || null,
         setor_nome: body.setor_nome || null,
         obs: body.obs || null,
@@ -290,28 +291,34 @@ http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
-    // ── CONFIG (responsável que recebe as solicitações via WhatsApp) ──
-    // Qualquer usuário logado pode LER quem é o responsável (precisa do nome/whatsapp p/ enviar).
+    // ── CONFIG (responsável por unidade que recebe as solicitações via WhatsApp) ──
+    // Qualquer usuário logado pode LER quem é o responsável da unidade (precisa do nome/whatsapp p/ enviar).
     if (req.method === "GET" && p === "/config/responsavel") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
-      const cfgRows = await sbGet("config", `chave=eq.responsavelComprasId`);
+      const filial = (parsed.query.filial || "").toString().toUpperCase();
+      if (!FILIAIS_PERMITIDAS.includes(filial)) return json(res, 400, { error: "Filial inválida" });
+      const chave = `responsavelComprasId_${filial}`;
+      const cfgRows = await sbGet("config", `chave=eq.${chave}`);
       const id = cfgRows && cfgRows[0] && cfgRows[0].valor;
       if (!id) return json(res, 200, null);
       const uRows = await sbGet("usuarios", `id=eq.${id}&select=id,nome,whatsapp`);
       return json(res, 200, (uRows && uRows[0]) || null);
     }
 
-    // Só admin pode TROCAR quem é o responsável
+    // Só admin pode TROCAR quem é o responsável de cada unidade
     if (req.method === "PUT" && p === "/config/responsavel") {
       const user = await getSession(req);
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
       const body = await readBody(req);
-      const existe = await sbGet("config", `chave=eq.responsavelComprasId`);
+      const filial = (body.filial || "").toString().toUpperCase();
+      if (!FILIAIS_PERMITIDAS.includes(filial)) return json(res, 400, { error: "Filial inválida" });
+      const chave = `responsavelComprasId_${filial}`;
+      const existe = await sbGet("config", `chave=eq.${chave}`);
       if (existe && existe[0]) {
-        await sbPatch("config", { valor: String(body.user_id) }, `chave=eq.responsavelComprasId`);
+        await sbPatch("config", { valor: String(body.user_id) }, `chave=eq.${chave}`);
       } else {
-        await sbInsert("config", { chave: "responsavelComprasId", valor: String(body.user_id) });
+        await sbInsert("config", { chave, valor: String(body.user_id) });
       }
       return json(res, 200, { ok: true });
     }
