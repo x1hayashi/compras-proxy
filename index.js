@@ -12,12 +12,15 @@ const GSB_CLI   = process.env.GSB_CLIENTE || "cf051147574882010032";
 const GSB_TOK   = process.env.GSB_TOKEN   || "$2a$10$BueYcMU8EZboMx3Fy12S8";
 const PORT      = process.env.PORT || 3000;
 
-const SB_URL    = process.env.SUPABASE_URL;
-const SB_KEY    = process.env.SUPABASE_KEY;
+const SB_URL_RAW = process.env.SUPABASE_URL;
+const SB_KEY      = process.env.SUPABASE_KEY;
 
-if (!SB_URL || !SB_KEY) {
+if (!SB_URL_RAW || !SB_KEY) {
   console.warn("ATENÇÃO: defina SUPABASE_URL e SUPABASE_KEY (mesmas do app da oficina) nas env vars do Render.");
 }
+
+// Extrai só o hostname, mesmo que a env var venha com /rest/v1/ ou barra no final por engano
+const SB_HOSTNAME = SB_URL_RAW ? SB_URL_RAW.replace(/^https?:\/\//, "").split("/")[0] : "";
 
 // ── SUPABASE REST HELPER ─────────────────────────────────────
 function sbReq(method, table, body, query) {
@@ -26,7 +29,7 @@ function sbReq(method, table, body, query) {
     if (query) path += `?${query}`;
     const data = body ? JSON.stringify(body) : null;
     const opts = {
-      hostname: SB_URL.replace(/^https?:\/\//, ""),
+      hostname: SB_HOSTNAME,
       path,
       method,
       headers: {
@@ -56,7 +59,8 @@ const sbPatch  = (table, body, query) => sbReq("PATCH", table, body, query);
 const sbDelete = (table, query) => sbReq("DELETE", table, null, query);
 
 // ── AUTH / SESSÃO (mesmo esquema do app da oficina) ──────────
-function sha256(s) { return crypto.createHash("sha256").update(s).digest("hex"); }
+function sha256(s) { return crypto.createHash("sha256").update(s + "gsb2026").digest("hex"); }
+function limparWhats(w) { return (w || "").replace(/\D/g, ""); }
 
 async function getSession(req) {
   const authH = req.headers["authorization"] || "";
@@ -130,7 +134,8 @@ http.createServer(async (req, res) => {
     // ── LOGIN (reaproveita usuarios da oficina) ──────────────
     if (req.method === "POST" && p === "/login") {
       const { whatsapp, senha } = await readBody(req);
-      const rows = await sbGet("usuarios", `whatsapp=eq.${encodeURIComponent(whatsapp)}`);
+      const whatsClean = limparWhats(whatsapp);
+      const rows = await sbGet("usuarios", `whatsapp=eq.${encodeURIComponent(whatsClean)}`);
       const user = rows && rows[0];
       if (!user || user.senha_hash !== sha256(senha)) return json(res, 401, { error: "WhatsApp ou senha inválidos" });
       if (user.status !== "aprovado") return json(res, 403, { error: "Usuário ainda não aprovado" });
