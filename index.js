@@ -135,9 +135,7 @@ http.createServer(async (req, res) => {
     if (req.method === "POST" && p === "/login") {
       const { whatsapp, senha } = await readBody(req);
       const whatsClean = limparWhats(whatsapp);
-      console.log("LOGIN tentativa:", { whatsClean, hash: sha256(senha) });
       const rows = await sbGet("usuarios", `whatsapp=eq.${encodeURIComponent(whatsClean)}`);
-      console.log("LOGIN resultado Supabase:", JSON.stringify(rows));
       const user = rows && rows[0];
       if (!user || user.senha_hash !== sha256(senha)) return json(res, 401, { error: "WhatsApp ou senha inválidos" });
       if (user.status !== "aprovado") return json(res, 403, { error: "Usuário ainda não aprovado" });
