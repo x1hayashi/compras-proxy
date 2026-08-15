@@ -172,16 +172,29 @@ async function atualizarHistorico() {
     const dataInicio = formatarDataGSB(inicio);
     const dataFim = formatarDataGSB(fim);
 
-    const [headers, itens, funcionarios, filiais] = await Promise.all([
+    const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas] = await Promise.all([
       gsbGetRange("solicitacoescompras", dataInicio, dataFim),
       gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim),
       gsbGet("funcionarios"),
       gsbGet("filiais"),
+      gsbGetRange("cotacoes", dataInicio, dataFim),
+      gsbGetRange("cotacoeslistas", dataInicio, dataFim),
     ]);
 
     const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
     const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
     const produtoMap = new Map(CACHE.produtos.map((p) => [String(p.idProduto), p]));
+    const cotacaoStatusMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.status]));
+
+    // idSolicitacaoCompraItem -> {idCotacao, status} (se houver mais de uma cotação p/ o mesmo item, fica a última)
+    const itemParaCotacao = new Map();
+    (cotacoesListas || []).forEach((cl) => {
+      if (!cl.idSolicitacaoCompraItem) return;
+      itemParaCotacao.set(String(cl.idSolicitacaoCompraItem), {
+        idCotacao: cl.idCotacao,
+        status: cotacaoStatusMap.get(String(cl.idCotacao)) || null,
+      });
+    });
 
     const itensPorSolic = {};
     (itens || []).forEach((it) => {
@@ -190,25 +203,48 @@ async function atualizarHistorico() {
       const aguardando = st.includes("aguardando");
       if (!aprovado && !aguardando) return;
       const prod = produtoMap.get(String(it.idProduto));
+      const cot = itemParaCotacao.get(String(it.idSolicitacaoCompraItem)) || null;
       const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
       lista.push({
         produto: (prod && prod.nome) || it.descricaoProduto,
         unidade: (prod && prod.unidade) || "",
         quantidade: aprovado ? (it.quantidadeAprovada || it.quantidade) : it.quantidade,
         status: it.status,
+        idCotacao: cot ? cot.idCotacao : null,
+        cotacaoStatus: cot ? cot.status : null,
       });
     });
 
+    function classificar(itensDaSolic) {
+      const temCotacaoAprovada = itensDaSolic.some((it) => it.cotacaoStatus && it.cotacaoStatus.toLowerCase().startsWith("aprovad"));
+      if (temCotacaoAprovada) return "cotacao_aprovada";
+      const temCotacao = itensDaSolic.some((it) => it.idCotacao);
+      if (temCotacao) return "em_cotacao";
+      return "aberto";
+    }
+    function corDoGrupo(grupo, itensDaSolic) {
+      if (grupo === "cotacao_aprovada") return "verde";
+      if (grupo === "em_cotacao") return "amarelo";
+      const todosAprovados = itensDaSolic.every((it) => (it.status || "").toLowerCase().startsWith("aprovad"));
+      return todosAprovados ? "verde" : "amarelo";
+    }
+
     HIST_CACHE.data = (headers || [])
       .filter((h) => itensPorSolic[h.idSolicitacaoCompra])
-      .map((h) => ({
-        idSolicitacaoCompra: h.idSolicitacaoCompra,
-        numeroSolicitacao: h.numeroSolicitacao,
-        dataSolicitacao: h.dataSolicitacao,
-        solicitante: funcMap.get(String(h.idSolicitante)) || `Func. ${h.idSolicitante}`,
-        filialSigla: filialMap.get(String(h.idFilial)) || null,
-        itens: itensPorSolic[h.idSolicitacaoCompra],
-      }))
+      .map((h) => {
+        const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
+        const grupo = classificar(itensDaSolic);
+        return {
+          idSolicitacaoCompra: h.idSolicitacaoCompra,
+          numeroSolicitacao: h.numeroSolicitacao,
+          dataSolicitacao: h.dataSolicitacao,
+          solicitante: funcMap.get(String(h.idSolicitante)) || `Func. ${h.idSolicitante}`,
+          filialSigla: filialMap.get(String(h.idFilial)) || null,
+          itens: itensDaSolic,
+          grupo,
+          cor: corDoGrupo(grupo, itensDaSolic),
+        };
+      })
       .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
 
     HIST_CACHE.atualizadoEm = new Date().toISOString();
