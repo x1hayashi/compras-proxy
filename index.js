@@ -74,8 +74,13 @@ async function getSession(req) {
 
 // ── GSB (GET only) ─────────────────────────────────────────
 function gsbGet(nome) {
+  return gsbFetch(`/${nome}/${GSB_CLI}/${encodeURIComponent(GSB_TOK)}`);
+}
+function gsbGetRange(nome, dataInicio, dataFim) {
+  return gsbFetch(`/${nome}/${dataInicio}/${dataFim}/${GSB_CLI}/${encodeURIComponent(GSB_TOK)}`);
+}
+function gsbFetch(gsbPath) {
   return new Promise((resolve, reject) => {
-    const gsbPath = `/${nome}/${GSB_CLI}/${encodeURIComponent(GSB_TOK)}`;
     const req = https.request(
       { hostname: GSB_HOST, path: gsbPath, method: "GET", headers: { Authorization: GSB_AUTH } },
       (res) => {
@@ -89,6 +94,11 @@ function gsbGet(nome) {
     req.on("error", reject);
     req.end();
   });
+}
+function formatarDataGSB(d) {
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}${mm}${d.getFullYear()}`;
 }
 
 // ── CACHE "QUENTE" DOS CADASTROS ──────────────────────────
@@ -144,6 +154,67 @@ async function atualizarCache() {
 
 atualizarCache(); // carrega já na subida do servidor
 setInterval(atualizarCache, 6 * 60 * 60 * 1000); // atualiza a cada 6 horas
+
+// ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB, últimos 90 dias) ──
+let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
+
+async function atualizarHistorico() {
+  if (HIST_CACHE.atualizando) return;
+  HIST_CACHE.atualizando = true;
+  try {
+    const fim = new Date();
+    const inicio = new Date();
+    inicio.setDate(inicio.getDate() - 90);
+    const dataInicio = formatarDataGSB(inicio);
+    const dataFim = formatarDataGSB(fim);
+
+    const [headers, itens, funcionarios, filiais] = await Promise.all([
+      gsbGetRange("solicitacoescompras", dataInicio, dataFim),
+      gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim),
+      gsbGet("funcionarios"),
+      gsbGet("filiais"),
+    ]);
+
+    const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
+    const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+
+    const itensPorSolic = {};
+    (itens || []).forEach((it) => {
+      const st = (it.status || "").toLowerCase();
+      const aprovado = st.startsWith("aprovad");
+      const aguardando = st.includes("aguardando");
+      if (!aprovado && !aguardando) return;
+      const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
+      lista.push({
+        produto: it.descricaoProduto,
+        quantidade: aprovado ? (it.quantidadeAprovada || it.quantidade) : it.quantidade,
+        status: it.status,
+      });
+    });
+
+    HIST_CACHE.data = (headers || [])
+      .filter((h) => itensPorSolic[h.idSolicitacaoCompra])
+      .map((h) => ({
+        idSolicitacaoCompra: h.idSolicitacaoCompra,
+        numeroSolicitacao: h.numeroSolicitacao,
+        dataSolicitacao: h.dataSolicitacao,
+        solicitante: funcMap.get(String(h.idSolicitante)) || `Func. ${h.idSolicitante}`,
+        filialSigla: filialMap.get(String(h.idFilial)) || null,
+        itens: itensPorSolic[h.idSolicitacaoCompra],
+      }))
+      .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
+
+    HIST_CACHE.atualizadoEm = new Date().toISOString();
+    console.log(`Histórico atualizado: ${HIST_CACHE.data.length} solicitações (90 dias)`);
+  } catch (e) {
+    console.error("Erro ao atualizar histórico do GSB:", e.message);
+  } finally {
+    HIST_CACHE.atualizando = false;
+  }
+}
+
+atualizarHistorico();
+setInterval(atualizarHistorico, 30 * 60 * 1000); // atualiza a cada 30 min
 
 // ── HELPERS HTTP ───────────────────────────────────────────
 function json(res, status, obj) {
@@ -218,6 +289,14 @@ http.createServer(async (req, res) => {
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
       atualizarCache();
       return json(res, 200, { ok: true, iniciado: true });
+    }
+
+    // ── HISTÓRICO (últimos 90 dias, direto do GSB) ─────────
+    if (req.method === "GET" && p === "/gsb/historico-solicitacoes") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      if (Date.now() - new Date(HIST_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarHistorico();
+      return json(res, 200, HIST_CACHE.data);
     }
 
     // ── SOLICITAÇÕES DE COMPRA ────────────────────────────
