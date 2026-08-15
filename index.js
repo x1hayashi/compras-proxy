@@ -152,8 +152,12 @@ async function atualizarCache() {
   }
 }
 
-atualizarCache(); // carrega já na subida do servidor
-setInterval(atualizarCache, 6 * 60 * 60 * 1000); // atualiza a cada 6 horas
+(async () => {
+  await atualizarCache();       // produtos/filiais/setores primeiro
+  await atualizarHistorico();   // depois o histórico, já usando os produtos em cache
+})();
+setInterval(atualizarCache, 6 * 60 * 60 * 1000);       // atualiza a cada 6 horas
+setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
 
 // ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB, últimos 90 dias) ──
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
@@ -177,6 +181,7 @@ async function atualizarHistorico() {
 
     const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
     const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+    const produtoMap = new Map(CACHE.produtos.map((p) => [String(p.idProduto), p]));
 
     const itensPorSolic = {};
     (itens || []).forEach((it) => {
@@ -184,9 +189,11 @@ async function atualizarHistorico() {
       const aprovado = st.startsWith("aprovad");
       const aguardando = st.includes("aguardando");
       if (!aprovado && !aguardando) return;
+      const prod = produtoMap.get(String(it.idProduto));
       const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
       lista.push({
-        produto: it.descricaoProduto,
+        produto: (prod && prod.nome) || it.descricaoProduto,
+        unidade: (prod && prod.unidade) || "",
         quantidade: aprovado ? (it.quantidadeAprovada || it.quantidade) : it.quantidade,
         status: it.status,
       });
@@ -213,8 +220,7 @@ async function atualizarHistorico() {
   }
 }
 
-atualizarHistorico();
-setInterval(atualizarHistorico, 30 * 60 * 1000); // atualiza a cada 30 min
+// (chamadas de inicialização feitas no bloco async no topo do arquivo)
 
 // ── HELPERS HTTP ───────────────────────────────────────────
 function json(res, status, obj) {
