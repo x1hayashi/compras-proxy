@@ -178,7 +178,9 @@ async function buscarHistorico(dataInicio, dataFim) {
   const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
   const produtoMap = new Map(CACHE.produtos.map((p) => [String(p.idProduto), p]));
   const cotacaoStatusMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.status]));
+  const cotacaoNumeroMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.numeroCotacao]));
   const pedidoStatusMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.statusPedido]));
+  const pedidoNumeroMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.numeroPedido]));
 
   // idSolicitacaoCompraItem -> {idCotacao, status}
   const itemParaCotacao = new Map();
@@ -217,8 +219,10 @@ async function buscarHistorico(dataInicio, dataFim) {
       status: it.status,
       idCotacao: cot ? cot.idCotacao : null,
       cotacaoStatus: cot ? cot.status : null,
+      numeroCotacao: cot ? cotacaoNumeroMap.get(String(cot.idCotacao)) : null,
       idPedidoCompra: ped ? ped.idPedidoCompra : null,
       pedidoStatus: ped ? ped.status : null,
+      numeroPedido: ped ? pedidoNumeroMap.get(String(ped.idPedidoCompra)) : null,
     });
   });
 
@@ -245,6 +249,8 @@ async function buscarHistorico(dataInicio, dataFim) {
     .map((h) => {
       const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
       const grupo = classificar(itensDaSolic);
+      const numeroCotacao = (itensDaSolic.map((it) => it.numeroCotacao).find(Boolean)) || null;
+      const numeroPedido = (itensDaSolic.map((it) => it.numeroPedido).find(Boolean)) || null;
       return {
         idSolicitacaoCompra: h.idSolicitacaoCompra,
         numeroSolicitacao: h.numeroSolicitacao,
@@ -254,6 +260,8 @@ async function buscarHistorico(dataInicio, dataFim) {
         itens: itensDaSolic,
         grupo,
         cor: corDoGrupo(grupo, itensDaSolic),
+        numeroCotacao,
+        numeroPedido,
       };
     })
     .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
@@ -304,6 +312,30 @@ http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") return json(res, 200, {});
 
   try {
+    if (req.method === "POST" && p === "/registrar") {
+      const body = await readBody(req);
+      const whatsClean = limparWhats(body.whatsapp);
+      const nome = (body.nome || "").trim();
+      const senha = body.senha || "";
+      const filial = (body.filial || "").toString().toUpperCase();
+      if (!nome || !whatsClean || !senha) return json(res, 400, { error: "Preencha nome, WhatsApp e senha" });
+      if (senha.length < 4) return json(res, 400, { error: "Senha muito curta" });
+      if (!FILIAIS_PERMITIDAS.includes(filial)) return json(res, 400, { error: "Selecione a filial" });
+
+      const existente = await sbGet("usuarios", `whatsapp=eq.${encodeURIComponent(whatsClean)}`);
+      if (existente && existente[0]) return json(res, 409, { error: "Já existe um usuário com esse WhatsApp" });
+
+      await sbInsert("usuarios", {
+        nome,
+        whatsapp: whatsClean,
+        senha_hash: sha256(senha),
+        filial,
+        status: "pendente",
+        admin: false,
+      });
+      return json(res, 200, { ok: true });
+    }
+
     // ── LOGIN ─────────────────────────────────────────────
     if (req.method === "POST" && p === "/login") {
       const { whatsapp, senha } = await readBody(req);
