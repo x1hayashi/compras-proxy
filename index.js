@@ -159,8 +159,105 @@ async function atualizarCache() {
 setInterval(atualizarCache, 6 * 60 * 60 * 1000);       // atualiza a cada 6 horas
 setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
 
-// ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB, últimos 90 dias) ──
+// ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB) ──
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
+
+async function buscarHistorico(dataInicio, dataFim) {
+  const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens] = await Promise.all([
+    gsbGetRange("solicitacoescompras", dataInicio, dataFim),
+    gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim),
+    gsbGet("funcionarios"),
+    gsbGet("filiais"),
+    gsbGetRange("cotacoes", dataInicio, dataFim),
+    gsbGetRange("cotacoeslistas", dataInicio, dataFim),
+    gsbGetRange("pedidoscompras", dataInicio, dataFim),
+    gsbGetRange("pedidoscomprasitens", dataInicio, dataFim),
+  ]);
+
+  const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
+  const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+  const produtoMap = new Map(CACHE.produtos.map((p) => [String(p.idProduto), p]));
+  const cotacaoStatusMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.status]));
+  const pedidoStatusMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.statusPedido]));
+
+  // idSolicitacaoCompraItem -> {idCotacao, status}
+  const itemParaCotacao = new Map();
+  (cotacoesListas || []).forEach((cl) => {
+    if (!cl.idSolicitacaoCompraItem) return;
+    itemParaCotacao.set(String(cl.idSolicitacaoCompraItem), {
+      idCotacao: cl.idCotacao,
+      status: cotacaoStatusMap.get(String(cl.idCotacao)) || null,
+    });
+  });
+
+  // idSolicitacaoCompraItem -> {idPedidoCompra, status}
+  const itemParaPedido = new Map();
+  (pedidosItens || []).forEach((pi) => {
+    if (!pi.idSolicitacaoCompraItem) return;
+    itemParaPedido.set(String(pi.idSolicitacaoCompraItem), {
+      idPedidoCompra: pi.idPedidoCompra,
+      status: pedidoStatusMap.get(String(pi.idPedidoCompra)) || null,
+    });
+  });
+
+  const itensPorSolic = {};
+  (itens || []).forEach((it) => {
+    const st = (it.status || "").toLowerCase();
+    const aprovado = st.startsWith("aprovad");
+    const aguardando = st.includes("aguardando");
+    if (!aprovado && !aguardando) return;
+    const prod = produtoMap.get(String(it.idProduto));
+    const cot = itemParaCotacao.get(String(it.idSolicitacaoCompraItem)) || null;
+    const ped = itemParaPedido.get(String(it.idSolicitacaoCompraItem)) || null;
+    const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
+    lista.push({
+      produto: (prod && prod.nome) || it.descricaoProduto,
+      unidade: (prod && prod.unidade) || "",
+      quantidade: aprovado ? (it.quantidadeAprovada || it.quantidade) : it.quantidade,
+      status: it.status,
+      idCotacao: cot ? cot.idCotacao : null,
+      cotacaoStatus: cot ? cot.status : null,
+      idPedidoCompra: ped ? ped.idPedidoCompra : null,
+      pedidoStatus: ped ? ped.status : null,
+    });
+  });
+
+  function classificar(itensDaSolic) {
+    const temPedidoAprovado = itensDaSolic.some((it) => it.pedidoStatus && it.pedidoStatus.toLowerCase().startsWith("aprovad"));
+    if (temPedidoAprovado) return "pedido_aprovado";
+    const temPedido = itensDaSolic.some((it) => it.idPedidoCompra);
+    if (temPedido) return "pedido_aberto";
+    const temCotacaoAprovada = itensDaSolic.some((it) => it.cotacaoStatus && it.cotacaoStatus.toLowerCase().startsWith("aprovad"));
+    if (temCotacaoAprovada) return "cotacao_aprovada";
+    const temCotacao = itensDaSolic.some((it) => it.idCotacao);
+    if (temCotacao) return "em_cotacao";
+    return "aberto";
+  }
+  function corDoGrupo(grupo, itensDaSolic) {
+    if (grupo === "pedido_aprovado" || grupo === "cotacao_aprovada") return "verde";
+    if (grupo === "pedido_aberto" || grupo === "em_cotacao") return "amarelo";
+    const todosAprovados = itensDaSolic.every((it) => (it.status || "").toLowerCase().startsWith("aprovad"));
+    return todosAprovados ? "verde" : "amarelo";
+  }
+
+  return (headers || [])
+    .filter((h) => itensPorSolic[h.idSolicitacaoCompra])
+    .map((h) => {
+      const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
+      const grupo = classificar(itensDaSolic);
+      return {
+        idSolicitacaoCompra: h.idSolicitacaoCompra,
+        numeroSolicitacao: h.numeroSolicitacao,
+        dataSolicitacao: h.dataSolicitacao,
+        solicitante: funcMap.get(String(h.idSolicitante)) || `Func. ${h.idSolicitante}`,
+        filialSigla: filialMap.get(String(h.idFilial)) || null,
+        itens: itensDaSolic,
+        grupo,
+        cor: corDoGrupo(grupo, itensDaSolic),
+      };
+    })
+    .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
+}
 
 async function atualizarHistorico() {
   if (HIST_CACHE.atualizando) return;
@@ -169,84 +266,7 @@ async function atualizarHistorico() {
     const fim = new Date();
     const inicio = new Date();
     inicio.setDate(inicio.getDate() - 90);
-    const dataInicio = formatarDataGSB(inicio);
-    const dataFim = formatarDataGSB(fim);
-
-    const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas] = await Promise.all([
-      gsbGetRange("solicitacoescompras", dataInicio, dataFim),
-      gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim),
-      gsbGet("funcionarios"),
-      gsbGet("filiais"),
-      gsbGetRange("cotacoes", dataInicio, dataFim),
-      gsbGetRange("cotacoeslistas", dataInicio, dataFim),
-    ]);
-
-    const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
-    const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
-    const produtoMap = new Map(CACHE.produtos.map((p) => [String(p.idProduto), p]));
-    const cotacaoStatusMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.status]));
-
-    // idSolicitacaoCompraItem -> {idCotacao, status} (se houver mais de uma cotação p/ o mesmo item, fica a última)
-    const itemParaCotacao = new Map();
-    (cotacoesListas || []).forEach((cl) => {
-      if (!cl.idSolicitacaoCompraItem) return;
-      itemParaCotacao.set(String(cl.idSolicitacaoCompraItem), {
-        idCotacao: cl.idCotacao,
-        status: cotacaoStatusMap.get(String(cl.idCotacao)) || null,
-      });
-    });
-
-    const itensPorSolic = {};
-    (itens || []).forEach((it) => {
-      const st = (it.status || "").toLowerCase();
-      const aprovado = st.startsWith("aprovad");
-      const aguardando = st.includes("aguardando");
-      if (!aprovado && !aguardando) return;
-      const prod = produtoMap.get(String(it.idProduto));
-      const cot = itemParaCotacao.get(String(it.idSolicitacaoCompraItem)) || null;
-      const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
-      lista.push({
-        produto: (prod && prod.nome) || it.descricaoProduto,
-        unidade: (prod && prod.unidade) || "",
-        quantidade: aprovado ? (it.quantidadeAprovada || it.quantidade) : it.quantidade,
-        status: it.status,
-        idCotacao: cot ? cot.idCotacao : null,
-        cotacaoStatus: cot ? cot.status : null,
-      });
-    });
-
-    function classificar(itensDaSolic) {
-      const temCotacaoAprovada = itensDaSolic.some((it) => it.cotacaoStatus && it.cotacaoStatus.toLowerCase().startsWith("aprovad"));
-      if (temCotacaoAprovada) return "cotacao_aprovada";
-      const temCotacao = itensDaSolic.some((it) => it.idCotacao);
-      if (temCotacao) return "em_cotacao";
-      return "aberto";
-    }
-    function corDoGrupo(grupo, itensDaSolic) {
-      if (grupo === "cotacao_aprovada") return "verde";
-      if (grupo === "em_cotacao") return "amarelo";
-      const todosAprovados = itensDaSolic.every((it) => (it.status || "").toLowerCase().startsWith("aprovad"));
-      return todosAprovados ? "verde" : "amarelo";
-    }
-
-    HIST_CACHE.data = (headers || [])
-      .filter((h) => itensPorSolic[h.idSolicitacaoCompra])
-      .map((h) => {
-        const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
-        const grupo = classificar(itensDaSolic);
-        return {
-          idSolicitacaoCompra: h.idSolicitacaoCompra,
-          numeroSolicitacao: h.numeroSolicitacao,
-          dataSolicitacao: h.dataSolicitacao,
-          solicitante: funcMap.get(String(h.idSolicitante)) || `Func. ${h.idSolicitante}`,
-          filialSigla: filialMap.get(String(h.idFilial)) || null,
-          itens: itensDaSolic,
-          grupo,
-          cor: corDoGrupo(grupo, itensDaSolic),
-        };
-      })
-      .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
-
+    HIST_CACHE.data = await buscarHistorico(formatarDataGSB(inicio), formatarDataGSB(fim));
     HIST_CACHE.atualizadoEm = new Date().toISOString();
     console.log(`Histórico atualizado: ${HIST_CACHE.data.length} solicitações (90 dias)`);
   } catch (e) {
@@ -333,10 +353,22 @@ http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, iniciado: true });
     }
 
-    // ── HISTÓRICO (últimos 90 dias, direto do GSB) ─────────
+    // ── HISTÓRICO (90 dias por padrão, ou período customizado) ──
     if (req.method === "GET" && p === "/gsb/historico-solicitacoes") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
+      const { inicio, fim } = parsed.query;
+      if (inicio || fim) {
+        // período customizado: busca ao vivo, não usa o cache padrão de 90 dias
+        const dInicio = inicio ? formatarDataGSB(new Date(inicio + "T00:00:00")) : formatarDataGSB(new Date(Date.now() - 90 * 24 * 60 * 60 * 1000));
+        const dFim = fim ? formatarDataGSB(new Date(fim + "T00:00:00")) : formatarDataGSB(new Date());
+        try {
+          const dados = await buscarHistorico(dInicio, dFim);
+          return json(res, 200, dados);
+        } catch (e) {
+          return json(res, 500, { error: "Erro ao buscar histórico: " + e.message });
+        }
+      }
       if (Date.now() - new Date(HIST_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarHistorico();
       return json(res, 200, HIST_CACHE.data);
     }
