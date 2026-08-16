@@ -192,13 +192,15 @@ async function buscarHistorico(dataInicio, dataFim) {
     });
   });
 
-  // idSolicitacaoCompraItem -> {idPedidoCompra, status}
+  // idSolicitacaoCompraItem -> {idPedidoCompra, status, valorUnitario, valorTotal}
   const itemParaPedido = new Map();
   (pedidosItens || []).forEach((pi) => {
     if (!pi.idSolicitacaoCompraItem) return;
     itemParaPedido.set(String(pi.idSolicitacaoCompraItem), {
       idPedidoCompra: pi.idPedidoCompra,
       status: pedidoStatusMap.get(String(pi.idPedidoCompra)) || null,
+      valorUnitario: pi.valorUnitario,
+      valorTotal: pi.valorProduto,
     });
   });
 
@@ -223,6 +225,8 @@ async function buscarHistorico(dataInicio, dataFim) {
       idPedidoCompra: ped ? ped.idPedidoCompra : null,
       pedidoStatus: ped ? ped.status : null,
       numeroPedido: ped ? pedidoNumeroMap.get(String(ped.idPedidoCompra)) : null,
+      valorUnitario: ped ? ped.valorUnitario : null,
+      valorTotal: ped ? ped.valorTotal : null,
     });
   });
 
@@ -244,7 +248,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     return todosAprovados ? "verde" : "amarelo";
   }
 
-  return (headers || [])
+  const listaSolicitacoes = (headers || [])
     .filter((h) => itensPorSolic[h.idSolicitacaoCompra])
     .map((h) => {
       const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
@@ -262,8 +266,51 @@ async function buscarHistorico(dataInicio, dataFim) {
         cor: corDoGrupo(grupo, itensDaSolic),
         numeroCotacao,
         numeroPedido,
+        avulso: false,
       };
+    });
+
+  // ── Pedidos lançados direto no GSB, sem passar por solicitação/cotação ──
+  const itensPorPedido = {};
+  (pedidosItens || []).forEach((pi) => {
+    (itensPorPedido[pi.idPedidoCompra] = itensPorPedido[pi.idPedidoCompra] || []).push(pi);
+  });
+
+  const pedidosAvulsos = (pedidos || [])
+    .filter((p) => {
+      const itensDoPedido = itensPorPedido[p.idPedidoCompra] || [];
+      return itensDoPedido.length > 0 && itensDoPedido.every((pi) => !pi.idSolicitacaoCompraItem);
     })
+    .map((p) => {
+      const itensDoPedido = itensPorPedido[p.idPedidoCompra];
+      const itensFormatados = itensDoPedido.map((pi) => {
+        const prod = produtoMap.get(String(pi.idProduto));
+        return {
+          produto: (prod && prod.nome) || `Produto ${pi.idProduto}`,
+          unidade: (prod && prod.unidade) || "",
+          quantidade: pi.quantidade,
+          valorUnitario: pi.valorUnitario,
+          valorTotal: pi.valorProduto,
+        };
+      });
+      const statusAprovado = (p.statusPedido || "").toLowerCase().startsWith("aprovad");
+      return {
+        idSolicitacaoCompra: `pedido-${p.idPedidoCompra}`,
+        numeroSolicitacao: null,
+        dataSolicitacao: p.dataPedido,
+        solicitante: funcMap.get(String(p.idFuncionarioComprador)) || funcMap.get(String(p.idFuncionarioResponsavel)) || "—",
+        filialSigla: filialMap.get(String(p.idFilial)) || null,
+        itens: itensFormatados,
+        grupo: statusAprovado ? "pedido_aprovado" : "pedido_aberto",
+        cor: statusAprovado ? "verde" : "amarelo",
+        numeroCotacao: null,
+        numeroPedido: p.numeroPedido,
+        avulso: true,
+      };
+    });
+
+  return listaSolicitacoes
+    .concat(pedidosAvulsos)
     .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
 }
 
