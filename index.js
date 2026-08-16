@@ -178,9 +178,18 @@ async function buscarHistorico(dataInicio, dataFim) {
   const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
   const produtoMap = new Map(CACHE.produtos.map((p) => [String(p.idProduto), p]));
   const cotacaoStatusMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.status]));
-  const cotacaoNumeroMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.numeroCotacao]));
+  const cotacaoInfoMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), {
+    numero: c.numeroCotacao,
+    data: c.dataCotacao,
+    pessoa: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || null,
+  }]));
   const pedidoStatusMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.statusPedido]));
-  const pedidoNumeroMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.numeroPedido]));
+  const pedidoInfoMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), {
+    numero: p.numeroPedido,
+    data: p.dataPedido,
+    pessoa: funcMap.get(String(p.idFuncionarioResponsavel)) || funcMap.get(String(p.idFuncionarioComprador)) || null,
+  }]));
+  const clParaCotacao = new Map((cotacoesListas || []).map((cl) => [String(cl.idCotacaoLista), cl.idCotacao]));
 
   // idSolicitacaoCompraItem -> {idCotacao, status}
   const itemParaCotacao = new Map();
@@ -221,10 +230,8 @@ async function buscarHistorico(dataInicio, dataFim) {
       status: it.status,
       idCotacao: cot ? cot.idCotacao : null,
       cotacaoStatus: cot ? cot.status : null,
-      numeroCotacao: cot ? cotacaoNumeroMap.get(String(cot.idCotacao)) : null,
       idPedidoCompra: ped ? ped.idPedidoCompra : null,
       pedidoStatus: ped ? ped.status : null,
-      numeroPedido: ped ? pedidoNumeroMap.get(String(ped.idPedidoCompra)) : null,
       valorUnitario: ped ? ped.valorUnitario : null,
       valorTotal: ped ? ped.valorTotal : null,
     });
@@ -253,8 +260,10 @@ async function buscarHistorico(dataInicio, dataFim) {
     .map((h) => {
       const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
       const grupo = classificar(itensDaSolic);
-      const numeroCotacao = (itensDaSolic.map((it) => it.numeroCotacao).find(Boolean)) || null;
-      const numeroPedido = (itensDaSolic.map((it) => it.numeroPedido).find(Boolean)) || null;
+      const idCotacaoAchado = itensDaSolic.map((it) => it.idCotacao).find(Boolean) || null;
+      const idPedidoAchado = itensDaSolic.map((it) => it.idPedidoCompra).find(Boolean) || null;
+      const cotInfo = idCotacaoAchado ? cotacaoInfoMap.get(String(idCotacaoAchado)) : null;
+      const pedInfo = idPedidoAchado ? pedidoInfoMap.get(String(idPedidoAchado)) : null;
       return {
         idSolicitacaoCompra: h.idSolicitacaoCompra,
         numeroSolicitacao: h.numeroSolicitacao,
@@ -264,8 +273,12 @@ async function buscarHistorico(dataInicio, dataFim) {
         itens: itensDaSolic,
         grupo,
         cor: corDoGrupo(grupo, itensDaSolic),
-        numeroCotacao,
-        numeroPedido,
+        numeroCotacao: cotInfo ? cotInfo.numero : null,
+        dataCotacao: cotInfo ? cotInfo.data : null,
+        comprador: cotInfo ? cotInfo.pessoa : null,
+        numeroPedido: pedInfo ? pedInfo.numero : null,
+        dataPedido: pedInfo ? pedInfo.data : null,
+        responsavelPedido: pedInfo ? pedInfo.pessoa : null,
         avulso: false,
       };
     });
@@ -294,17 +307,24 @@ async function buscarHistorico(dataInicio, dataFim) {
         };
       });
       const statusAprovado = (p.statusPedido || "").toLowerCase().startsWith("aprovad");
+      // se algum item veio de uma cotação (mesmo sem solicitação), resgata os dados da cotação também
+      const idCotacaoOrigem = itensDoPedido.map((pi) => pi.idCotacaoLista && clParaCotacao.get(String(pi.idCotacaoLista))).find(Boolean) || null;
+      const cotInfo = idCotacaoOrigem ? cotacaoInfoMap.get(String(idCotacaoOrigem)) : null;
       return {
         idSolicitacaoCompra: `pedido-${p.idPedidoCompra}`,
         numeroSolicitacao: null,
-        dataSolicitacao: p.dataPedido,
-        solicitante: funcMap.get(String(p.idFuncionarioComprador)) || funcMap.get(String(p.idFuncionarioResponsavel)) || "—",
+        dataSolicitacao: null,
+        solicitante: null,
         filialSigla: filialMap.get(String(p.idFilial)) || null,
         itens: itensFormatados,
         grupo: statusAprovado ? "pedido_aprovado" : "pedido_aberto",
         cor: statusAprovado ? "verde" : "amarelo",
-        numeroCotacao: null,
+        numeroCotacao: cotInfo ? cotInfo.numero : null,
+        dataCotacao: cotInfo ? cotInfo.data : null,
+        comprador: cotInfo ? cotInfo.pessoa : null,
         numeroPedido: p.numeroPedido,
+        dataPedido: p.dataPedido,
+        responsavelPedido: funcMap.get(String(p.idFuncionarioResponsavel)) || funcMap.get(String(p.idFuncionarioComprador)) || null,
         avulso: true,
       };
     });
@@ -341,14 +361,18 @@ async function buscarHistorico(dataInicio, dataFim) {
       return {
         idSolicitacaoCompra: `cotacao-${c.idCotacao}`,
         numeroSolicitacao: null,
-        dataSolicitacao: c.dataCotacao,
-        solicitante: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || "—",
+        dataSolicitacao: null,
+        solicitante: null,
         filialSigla: filialMap.get(String(c.idFilial)) || null,
         itens: itensRestantes,
         grupo: statusAprovado ? "cotacao_aprovada" : "em_cotacao",
         cor: statusAprovado ? "verde" : "amarelo",
         numeroCotacao: c.numeroCotacao,
+        dataCotacao: c.dataCotacao,
+        comprador: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || null,
         numeroPedido: null,
+        dataPedido: null,
+        responsavelPedido: null,
         avulso: true,
       };
     });
@@ -356,7 +380,11 @@ async function buscarHistorico(dataInicio, dataFim) {
   return listaSolicitacoes
     .concat(pedidosAvulsos)
     .concat(cotacoesAvulsas)
-    .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
+    .sort((a, b) => {
+      const da = new Date(a.dataSolicitacao || a.dataCotacao || a.dataPedido || 0);
+      const db = new Date(b.dataSolicitacao || b.dataCotacao || b.dataPedido || 0);
+      return db - da;
+    });
 }
 
 async function atualizarHistorico() {
