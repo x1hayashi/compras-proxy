@@ -309,8 +309,53 @@ async function buscarHistorico(dataInicio, dataFim) {
       };
     });
 
+  // ── Cotações criadas direto no GSB, sem vir de uma solicitação ──
+  const itensPorCotacaoAvulsa = {};
+  (cotacoesListas || []).forEach((cl) => {
+    if (cl.idSolicitacaoCompraItem) return; // já tratado dentro da solicitação
+    const prod = produtoMap.get(String(cl.idProduto));
+    const lista = (itensPorCotacaoAvulsa[cl.idCotacao] = itensPorCotacaoAvulsa[cl.idCotacao] || []);
+    lista.push({
+      produto: (prod && prod.nome) || `Produto ${cl.idProduto}`,
+      unidade: (prod && prod.unidade) || "",
+      quantidade: cl.quantidade,
+      idCotacaoLista: cl.idCotacaoLista,
+    });
+  });
+
+  // idCotacaoLista que já virou item de pedido avulso — evita duplicar o mesmo item em dois cards
+  const cotacaoListaJaVirouPedidoAvulso = new Set();
+  (pedidosItens || []).forEach((pi) => {
+    if (!pi.idSolicitacaoCompraItem && pi.idCotacaoLista) cotacaoListaJaVirouPedidoAvulso.add(String(pi.idCotacaoLista));
+  });
+
+  const cotacoesAvulsas = (cotacoes || [])
+    .map((c) => {
+      const itensBrutos = itensPorCotacaoAvulsa[c.idCotacao] || [];
+      const itensRestantes = itensBrutos.filter((it) => !cotacaoListaJaVirouPedidoAvulso.has(String(it.idCotacaoLista)));
+      return { c, itensRestantes };
+    })
+    .filter(({ itensRestantes }) => itensRestantes.length > 0)
+    .map(({ c, itensRestantes }) => {
+      const statusAprovado = (c.status || "").toLowerCase().startsWith("aprovad");
+      return {
+        idSolicitacaoCompra: `cotacao-${c.idCotacao}`,
+        numeroSolicitacao: null,
+        dataSolicitacao: c.dataCotacao,
+        solicitante: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || "—",
+        filialSigla: filialMap.get(String(c.idFilial)) || null,
+        itens: itensRestantes,
+        grupo: statusAprovado ? "cotacao_aprovada" : "em_cotacao",
+        cor: statusAprovado ? "verde" : "amarelo",
+        numeroCotacao: c.numeroCotacao,
+        numeroPedido: null,
+        avulso: true,
+      };
+    });
+
   return listaSolicitacoes
     .concat(pedidosAvulsos)
+    .concat(cotacoesAvulsas)
     .sort((a, b) => new Date(b.dataSolicitacao) - new Date(a.dataSolicitacao));
 }
 
