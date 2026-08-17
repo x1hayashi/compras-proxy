@@ -87,13 +87,27 @@ function gsbFetch(gsbPath) {
         let chunks = "";
         res.on("data", (c) => (chunks += c));
         res.on("end", () => {
-          try { resolve(JSON.parse(chunks)); } catch (e) { reject(e); }
+          try {
+            resolve(JSON.parse(chunks));
+          } catch (e) {
+            reject(new Error(`Falha ao interpretar resposta do GSB em ${gsbPath} (status ${res.statusCode}, ${chunks.length} bytes): ${e.message}`));
+          }
         });
       }
     );
-    req.on("error", reject);
+    req.on("error", (e) => reject(new Error(`Falha de rede ao chamar ${gsbPath}: ${e.message}`)));
+    req.setTimeout(25000, () => req.destroy(new Error(`Timeout ao chamar ${gsbPath}`)));
     req.end();
   });
+}
+// Busca segura: se o endpoint falhar (timeout, resposta vazia etc.), não derruba o resto — retorna [] e loga o aviso
+async function gsbGetSeguro(promise, nomeParaLog) {
+  try {
+    return await promise;
+  } catch (e) {
+    console.warn(`Aviso: falha ao buscar "${nomeParaLog}" — seguindo sem esses dados. Detalhe: ${e.message}`);
+    return [];
+  }
 }
 function formatarDataGSB(d) {
   const dd = String(d.getDate()).padStart(2, "0");
