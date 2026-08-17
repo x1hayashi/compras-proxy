@@ -178,18 +178,18 @@ let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
 
 async function buscarHistorico(dataInicio, dataFim) {
   const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos] = await Promise.all([
-    gsbGetRange("solicitacoescompras", dataInicio, dataFim),
-    gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim),
-    gsbGet("funcionarios"),
-    gsbGet("filiais"),
-    gsbGetRange("cotacoes", dataInicio, dataFim),
-    gsbGetRange("cotacoeslistas", dataInicio, dataFim),
-    gsbGetRange("pedidoscompras", dataInicio, dataFim),
-    gsbGetRange("pedidoscomprasitens", dataInicio, dataFim),
-    gsbGet("unidadesfaturamentos"),
-    gsbGet("fichas"),
-    gsbGetRange("cotacoesfornecedores", dataInicio, dataFim),
-    gsbGetRange("cotacoesprodutos", dataInicio, dataFim),
+    gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
+    gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
+    gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
+    gsbGetSeguro(gsbGet("filiais"), "filiais"),
+    gsbGetSeguro(gsbGetRange("cotacoes", dataInicio, dataFim), "cotacoes"),
+    gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicio, dataFim), "cotacoeslistas"),
+    gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicio, dataFim), "pedidoscompras"),
+    gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicio, dataFim), "pedidoscomprasitens"),
+    gsbGetSeguro(gsbGet("unidadesfaturamentos"), "unidadesfaturamentos"),
+    gsbGetSeguro(gsbGet("fichas"), "fichas"),
+    gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
+    gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
   ]);
 
   const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
@@ -211,15 +211,26 @@ async function buscarHistorico(dataInicio, dataFim) {
   const cotacaoFornecedorMap = new Map((cotacoesFornecedores || []).map((cf) => [String(cf.idCotacaoFornecedor), { idCotacao: cf.idCotacao, idFicha: cf.idFicha }]));
   // "{idCotacao}_{idProduto}" -> {valorUnitario, valorTotal, idFicha} do item aprovado (fornecedor vencedor)
   const itemCotacaoPreco = new Map();
+  // "{idCotacao}_{idProduto}" -> [{idFicha, fornecedor, valorUnitario, valorTotal, aprovado}] — todas as propostas (vencedoras e não vencedoras)
+  const itemCotacaoTodasPropostas = new Map();
   (cotacoesProdutos || []).forEach((cp) => {
-    if (!(cp.statusAprovado || "").toLowerCase().startsWith("aprovad")) return;
     const cf = cotacaoFornecedorMap.get(String(cp.idCotacaoFornecedor));
     if (!cf) return;
-    itemCotacaoPreco.set(`${cf.idCotacao}_${cp.idProduto}`, {
+    const key = `${cf.idCotacao}_${cp.idProduto}`;
+    const aprovado = (cp.statusAprovado || "").toLowerCase().startsWith("aprovad");
+    const proposta = {
+      idFicha: cf.idFicha,
+      fornecedor: fichaNomeMap.get(String(cf.idFicha)) || null,
       valorUnitario: cp.valorUnitario,
       valorTotal: cp.valorProduto,
-      idFicha: cf.idFicha,
-    });
+      aprovado,
+    };
+    const lista = (itemCotacaoTodasPropostas.get(key) || []);
+    lista.push(proposta);
+    itemCotacaoTodasPropostas.set(key, lista);
+    if (aprovado) {
+      itemCotacaoPreco.set(key, { valorUnitario: cp.valorUnitario, valorTotal: cp.valorProduto, idFicha: cf.idFicha });
+    }
   });
   function fornecedorDoPedido(p) {
     if (!p.idUnidadeFaturamento) return null;
@@ -267,6 +278,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     const cot = itemParaCotacao.get(String(it.idSolicitacaoCompraItem)) || null;
     const ped = itemParaPedido.get(String(it.idSolicitacaoCompraItem)) || null;
     const precoCot = cot ? itemCotacaoPreco.get(`${cot.idCotacao}_${it.idProduto}`) : null;
+    const propostasCot = cot ? (itemCotacaoTodasPropostas.get(`${cot.idCotacao}_${it.idProduto}`) || []) : [];
     const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
     lista.push({
       produto: (prod && prod.nome) || it.descricaoProduto,
@@ -278,6 +290,7 @@ async function buscarHistorico(dataInicio, dataFim) {
       cotacaoValorUnitario: precoCot ? precoCot.valorUnitario : null,
       cotacaoValorTotal: precoCot ? precoCot.valorTotal : null,
       cotacaoIdFicha: precoCot ? precoCot.idFicha : null,
+      propostasCotacao: propostasCot,
       idPedidoCompra: ped ? ped.idPedidoCompra : null,
       pedidoStatus: ped ? ped.status : null,
       valorUnitario: ped ? ped.valorUnitario : null,
@@ -427,6 +440,7 @@ async function buscarHistorico(dataInicio, dataFim) {
           cotacaoValorUnitario: preco ? preco.valorUnitario : null,
           cotacaoValorTotal: preco ? preco.valorTotal : null,
           cotacaoIdFicha: preco ? preco.idFicha : null,
+          propostasCotacao: itemCotacaoTodasPropostas.get(`${c.idCotacao}_${it.idProduto}`) || [],
         };
       });
       const idFichaCotacao = itensComPreco.map((it) => it.cotacaoIdFicha).find(Boolean) || null;
