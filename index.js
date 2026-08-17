@@ -246,13 +246,13 @@ async function buscarHistorico(dataInicio, dataFim) {
     if (temCotacaoAprovada) return "cotacao_aprovada";
     const temCotacao = itensDaSolic.some((it) => it.idCotacao);
     if (temCotacao) return "em_cotacao";
-    return "aberto";
-  }
-  function corDoGrupo(grupo, itensDaSolic) {
-    if (grupo === "pedido_aprovado" || grupo === "cotacao_aprovada") return "verde";
-    if (grupo === "pedido_aberto" || grupo === "em_cotacao") return "amarelo";
+    // sem cotação nem pedido ainda: separa quem já foi aprovado de quem ainda aguarda aprovação
     const todosAprovados = itensDaSolic.every((it) => (it.status || "").toLowerCase().startsWith("aprovad"));
-    return todosAprovados ? "verde" : "amarelo";
+    return todosAprovados ? "aprovada_sem_cotacao" : "aberto";
+  }
+  function corDoGrupo(grupo) {
+    if (["pedido_aprovado", "cotacao_aprovada", "aprovada_sem_cotacao"].includes(grupo)) return "verde";
+    return "amarelo";
   }
 
   const listaSolicitacoes = (headers || [])
@@ -272,7 +272,7 @@ async function buscarHistorico(dataInicio, dataFim) {
         filialSigla: filialMap.get(String(h.idFilial)) || null,
         itens: itensDaSolic,
         grupo,
-        cor: corDoGrupo(grupo, itensDaSolic),
+        cor: corDoGrupo(grupo),
         numeroCotacao: cotInfo ? cotInfo.numero : null,
         dataCotacao: cotInfo ? cotInfo.data : null,
         comprador: cotInfo ? cotInfo.pessoa : null,
