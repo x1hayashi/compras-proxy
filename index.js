@@ -163,7 +163,7 @@ setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
 
 async function buscarHistorico(dataInicio, dataFim) {
-  const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens] = await Promise.all([
+  const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas] = await Promise.all([
     gsbGetRange("solicitacoescompras", dataInicio, dataFim),
     gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim),
     gsbGet("funcionarios"),
@@ -172,6 +172,8 @@ async function buscarHistorico(dataInicio, dataFim) {
     gsbGetRange("cotacoeslistas", dataInicio, dataFim),
     gsbGetRange("pedidoscompras", dataInicio, dataFim),
     gsbGetRange("pedidoscomprasitens", dataInicio, dataFim),
+    gsbGet("unidadesfaturamentos"),
+    gsbGet("fichas"),
   ]);
 
   const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
@@ -184,10 +186,21 @@ async function buscarHistorico(dataInicio, dataFim) {
     pessoa: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || null,
   }]));
   const pedidoStatusMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.statusPedido]));
+
+  // idUnidadeFaturamento -> idFicha (fornecedor)
+  const unidadeFaturamentoParaFicha = new Map((unidadesFaturamentos || []).map((u) => [String(u.idUnidadeFaturamento), u.idFicha]));
+  const fichaNomeMap = new Map((fichas || []).map((f) => [String(f.idFicha), f.razao]));
+  function fornecedorDoPedido(p) {
+    if (!p.idUnidadeFaturamento) return null;
+    const idFicha = unidadeFaturamentoParaFicha.get(String(p.idUnidadeFaturamento));
+    return idFicha ? fichaNomeMap.get(String(idFicha)) || null : null;
+  }
+
   const pedidoInfoMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), {
     numero: p.numeroPedido,
     data: p.dataPedido,
     pessoa: funcMap.get(String(p.idFuncionarioResponsavel)) || funcMap.get(String(p.idFuncionarioComprador)) || null,
+    fornecedor: fornecedorDoPedido(p),
   }]));
   const clParaCotacao = new Map((cotacoesListas || []).map((cl) => [String(cl.idCotacaoLista), cl.idCotacao]));
 
@@ -279,6 +292,7 @@ async function buscarHistorico(dataInicio, dataFim) {
         numeroPedido: pedInfo ? pedInfo.numero : null,
         dataPedido: pedInfo ? pedInfo.data : null,
         responsavelPedido: pedInfo ? pedInfo.pessoa : null,
+        fornecedorPedido: pedInfo ? pedInfo.fornecedor : null,
         avulso: false,
       };
     });
@@ -325,6 +339,7 @@ async function buscarHistorico(dataInicio, dataFim) {
         numeroPedido: p.numeroPedido,
         dataPedido: p.dataPedido,
         responsavelPedido: funcMap.get(String(p.idFuncionarioResponsavel)) || funcMap.get(String(p.idFuncionarioComprador)) || null,
+        fornecedorPedido: fornecedorDoPedido(p),
         avulso: true,
       };
     });
