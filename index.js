@@ -122,6 +122,7 @@ let CACHE = {
   produtos: [],       // [{idProduto, nome: "NOMEPRODUTO-VARIEDADE", unidade, idUnidade}]
   filiais: [],        // já filtradas para HGO/HBA
   setores: [],
+  unidades: [],       // [{idUnidade, nomeUnidade, siglaUnidade}] — cadastro de unidades do GSB
   atualizadoEm: null,
   atualizando: false,
 };
@@ -157,6 +158,7 @@ async function atualizarCache() {
 
     CACHE.filiais = (filiais || []).filter((f) => FILIAIS_PERMITIDAS.includes((f.siglaFilial || "").toUpperCase()));
     CACHE.setores = setores || [];
+    CACHE.unidades = (unidades || []).slice().sort((a, b) => (a.siglaUnidade || "").localeCompare(b.siglaUnidade || ""));
     CACHE.atualizadoEm = new Date().toISOString();
     console.log(`Cache atualizado: ${CACHE.produtos.length} produtos, ${CACHE.filiais.length} filiais, ${CACHE.setores.length} setores`);
   } catch (e) {
@@ -577,6 +579,11 @@ http.createServer(async (req, res) => {
       const idFilial = parsed.query.idFilial;
       const lista = idFilial ? CACHE.setores.filter((s) => String(s.idFilial) === String(idFilial)) : CACHE.setores;
       return json(res, 200, lista);
+    }
+    if (req.method === "GET" && p === "/gsb/unidades") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      return json(res, 200, CACHE.unidades);
     }
     if (req.method === "GET" && p === "/gsb/produtos-busca") {
       const user = await getSession(req);
