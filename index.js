@@ -640,6 +640,8 @@ http.createServer(async (req, res) => {
       if (!user) return json(res, 401, { error: "Não autenticado" });
       const body = await readBody(req);
       if (!body.itens || !body.itens.length) return json(res, 400, { error: "Inclua ao menos um item" });
+      const itemSemData = body.itens.find((it) => !it.dataNecessidade);
+      if (itemSemData) return json(res, 400, { error: "Todo item precisa de uma data de necessidade" });
 
       const cab = await sbInsert("solicitacoescompras", {
         id_filial: body.id_filial || null,
@@ -660,8 +662,7 @@ http.createServer(async (req, res) => {
         descricao_produto: it.descricaoProduto,
         quantidade: it.quantidade,
         unidade: it.unidade || null,
-        id_urgencia: it.idUrgencia || "2",
-        urgencia_nome: it.urgenciaNome || "Normal",
+        data_necessidade: it.dataNecessidade,
       }));
       await sbInsert("solicitacoescompras_itens", itensPayload);
 
