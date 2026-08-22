@@ -201,7 +201,8 @@ async function buscarHistorico(dataInicio, dataFim) {
   const cotacaoInfoMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), {
     numero: c.numeroCotacao,
     data: c.dataCotacao,
-    pessoa: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || null,
+    cotador: funcMap.get(String(c.idFuncionarioCotador)) || null,
+    responsavel: funcMap.get(String(c.idFuncionarioResponsavel)) || null,
   }]));
   const pedidoStatusMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.statusPedido]));
 
@@ -243,7 +244,8 @@ async function buscarHistorico(dataInicio, dataFim) {
   const pedidoInfoMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), {
     numero: p.numeroPedido,
     data: p.dataPedido,
-    pessoa: funcMap.get(String(p.idFuncionarioResponsavel)) || funcMap.get(String(p.idFuncionarioComprador)) || null,
+    comprador: funcMap.get(String(p.idFuncionarioComprador)) || null,
+    responsavel: funcMap.get(String(p.idFuncionarioResponsavel)) || null,
     fornecedor: fornecedorDoPedido(p),
   }]));
   const clParaCotacao = new Map((cotacoesListas || []).map((cl) => [String(cl.idCotacaoLista), cl.idCotacao]));
@@ -350,12 +352,14 @@ async function buscarHistorico(dataInicio, dataFim) {
         cor: corDoGrupo(grupo),
         numeroCotacao: cotInfo ? cotInfo.numero : null,
         dataCotacao: cotInfo ? cotInfo.data : null,
-        comprador: cotInfo ? cotInfo.pessoa : null,
+        cotador: cotInfo ? cotInfo.cotador : null,
+        responsavelCotacao: cotInfo ? cotInfo.responsavel : null,
         idFichaCotacao,
         fornecedorCotacao: idFichaCotacao ? fichaNomeMap.get(String(idFichaCotacao)) || null : null,
         numeroPedido: pedInfo ? pedInfo.numero : null,
         dataPedido: pedInfo ? pedInfo.data : null,
-        responsavelPedido: pedInfo ? pedInfo.pessoa : null,
+        compradorPedido: pedInfo ? pedInfo.comprador : null,
+        responsavelPedido: pedInfo ? pedInfo.responsavel : null,
         fornecedorPedido: pedInfo ? pedInfo.fornecedor : null,
         avulso: false,
       };
@@ -412,12 +416,14 @@ async function buscarHistorico(dataInicio, dataFim) {
         cor: statusAprovado ? "verde" : "amarelo",
         numeroCotacao: cotInfo ? cotInfo.numero : null,
         dataCotacao: cotInfo ? cotInfo.data : null,
-        comprador: cotInfo ? cotInfo.pessoa : null,
+        cotador: cotInfo ? cotInfo.cotador : null,
+        responsavelCotacao: cotInfo ? cotInfo.responsavel : null,
         idFichaCotacao,
         fornecedorCotacao: idFichaCotacao ? fichaNomeMap.get(String(idFichaCotacao)) || null : null,
         numeroPedido: p.numeroPedido,
         dataPedido: p.dataPedido,
-        responsavelPedido: funcMap.get(String(p.idFuncionarioResponsavel)) || funcMap.get(String(p.idFuncionarioComprador)) || null,
+        compradorPedido: funcMap.get(String(p.idFuncionarioComprador)) || null,
+        responsavelPedido: funcMap.get(String(p.idFuncionarioResponsavel)) || null,
         fornecedorPedido: fornecedorDoPedido(p),
         avulso: true,
       };
@@ -475,11 +481,13 @@ async function buscarHistorico(dataInicio, dataFim) {
         cor: statusAprovado ? "verde" : "amarelo",
         numeroCotacao: c.numeroCotacao,
         dataCotacao: c.dataCotacao,
-        comprador: funcMap.get(String(c.idFuncionarioCotador)) || funcMap.get(String(c.idFuncionarioResponsavel)) || null,
+        cotador: funcMap.get(String(c.idFuncionarioCotador)) || null,
+        responsavelCotacao: funcMap.get(String(c.idFuncionarioResponsavel)) || null,
         idFichaCotacao,
         fornecedorCotacao: idFichaCotacao ? fichaNomeMap.get(String(idFichaCotacao)) || null : null,
         numeroPedido: null,
         dataPedido: null,
+        compradorPedido: null,
         responsavelPedido: null,
         avulso: true,
       };
