@@ -258,7 +258,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     });
   });
 
-  // idSolicitacaoCompraItem -> {idPedidoCompra, status, valorUnitario, valorTotal}
+  // idSolicitacaoCompraItem -> {idPedidoCompra, status, valorUnitario, valorTotal, quantidadePedida, quantidadeEntregue}
   const itemParaPedido = new Map();
   (pedidosItens || []).forEach((pi) => {
     if (!pi.idSolicitacaoCompraItem) return;
@@ -267,6 +267,8 @@ async function buscarHistorico(dataInicio, dataFim) {
       status: pedidoStatusMap.get(String(pi.idPedidoCompra)) || null,
       valorUnitario: pi.valorUnitario,
       valorTotal: pi.valorProduto,
+      quantidadePedida: pi.quantidade,
+      quantidadeEntregue: pi.quantidadeEntregue,
     });
   });
 
@@ -297,12 +299,21 @@ async function buscarHistorico(dataInicio, dataFim) {
       pedidoStatus: ped ? ped.status : null,
       valorUnitario: ped ? ped.valorUnitario : null,
       valorTotal: ped ? ped.valorTotal : null,
+      pedidoQuantidadePedida: ped ? ped.quantidadePedida : null,
+      pedidoQuantidadeEntregue: ped ? ped.quantidadeEntregue : null,
     });
   });
 
   function classificar(itensDaSolic) {
-    const temPedidoAprovado = itensDaSolic.some((it) => it.pedidoStatus && it.pedidoStatus.toLowerCase().startsWith("aprovad"));
-    if (temPedidoAprovado) return "pedido_aprovado";
+    const itensAprovados = itensDaSolic.filter((it) => it.pedidoStatus && it.pedidoStatus.toLowerCase().startsWith("aprovad"));
+    if (itensAprovados.length) {
+      const todosEntregues = itensAprovados.every((it) => {
+        const pedida = Number(it.pedidoQuantidadePedida || 0);
+        const entregue = Number(it.pedidoQuantidadeEntregue || 0);
+        return pedida > 0 && entregue >= pedida;
+      });
+      return todosEntregues ? "pedido_aprovado_concluido" : "pedido_aprovado_aberto";
+    }
     const temPedido = itensDaSolic.some((it) => it.idPedidoCompra);
     if (temPedido) return "pedido_aberto";
     const temCotacaoAprovada = itensDaSolic.some((it) => it.cotacaoStatus && it.cotacaoStatus.toLowerCase().startsWith("aprovad"));
@@ -314,7 +325,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     return todosAprovados ? "aprovada_sem_cotacao" : "aberto";
   }
   function corDoGrupo(grupo) {
-    if (["pedido_aprovado", "cotacao_aprovada", "aprovada_sem_cotacao"].includes(grupo)) return "verde";
+    if (["pedido_aprovado_concluido", "pedido_aprovado_aberto", "cotacao_aprovada", "aprovada_sem_cotacao"].includes(grupo)) return "verde";
     return "amarelo";
   }
 
@@ -371,9 +382,16 @@ async function buscarHistorico(dataInicio, dataFim) {
           quantidade: pi.quantidade,
           valorUnitario: pi.valorUnitario,
           valorTotal: pi.valorProduto,
+          quantidadeEntregue: pi.quantidadeEntregue,
         };
       });
       const statusAprovado = (p.statusPedido || "").toLowerCase().startsWith("aprovad");
+      const todosEntregues = statusAprovado && itensDoPedido.every((pi) => {
+        const pedida = Number(pi.quantidade || 0);
+        const entregue = Number(pi.quantidadeEntregue || 0);
+        return pedida > 0 && entregue >= pedida;
+      });
+      const grupo = !statusAprovado ? "pedido_aberto" : (todosEntregues ? "pedido_aprovado_concluido" : "pedido_aprovado_aberto");
       // se algum item veio de uma cotação (mesmo sem solicitação), resgata os dados da cotação também
       const idCotacaoOrigem = itensDoPedido.map((pi) => pi.idCotacaoLista && clParaCotacao.get(String(pi.idCotacaoLista))).find(Boolean) || null;
       const cotInfo = idCotacaoOrigem ? cotacaoInfoMap.get(String(idCotacaoOrigem)) : null;
@@ -390,7 +408,7 @@ async function buscarHistorico(dataInicio, dataFim) {
         solicitante: null,
         filialSigla: filialMap.get(String(p.idFilial)) || null,
         itens: itensFormatados,
-        grupo: statusAprovado ? "pedido_aprovado" : "pedido_aberto",
+        grupo,
         cor: statusAprovado ? "verde" : "amarelo",
         numeroCotacao: cotInfo ? cotInfo.numero : null,
         dataCotacao: cotInfo ? cotInfo.data : null,
