@@ -211,7 +211,7 @@ async function buscarHistorico(dataInicio, dataFim) {
   const fichaNomeMap = new Map((fichas || []).map((f) => [String(f.idFicha), f.razao]));
 
   // idCotacaoFornecedor -> {idCotacao, idFicha}
-  const cotacaoFornecedorMap = new Map((cotacoesFornecedores || []).map((cf) => [String(cf.idCotacaoFornecedor), { idCotacao: cf.idCotacao, idFicha: cf.idFicha }]));
+  const cotacaoFornecedorMap = new Map((cotacoesFornecedores || []).map((cf) => [String(cf.idCotacaoFornecedor), { idCotacao: cf.idCotacao, idFicha: cf.idFicha, observacao: cf.observacao || null }]));
   // "{idCotacao}_{idProduto}" -> {valorUnitario, valorTotal, idFicha} do item aprovado (fornecedor vencedor)
   const itemCotacaoPreco = new Map();
   // "{idCotacao}_{idProduto}" -> [{idFicha, fornecedor, valorUnitario, valorTotal, aprovado}] — todas as propostas (vencedoras e não vencedoras)
@@ -227,6 +227,7 @@ async function buscarHistorico(dataInicio, dataFim) {
       valorUnitario: cp.valorUnitario,
       valorTotal: cp.valorProduto,
       aprovado,
+      observacao: cf.observacao || null,
     };
     const lista = (itemCotacaoTodasPropostas.get(key) || []);
     lista.push(proposta);
