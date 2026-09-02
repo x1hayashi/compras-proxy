@@ -114,6 +114,25 @@ function formatarDataGSB(d) {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   return `${dd}${mm}${d.getFullYear()}`;
 }
+function parseDataGSB(s) {
+  // aceita "DDMMYYYY" (formato da API) ou "YYYY-MM-DD" (formato de <input type=date>)
+  if (/^\d{8}$/.test(s)) {
+    return new Date(Number(s.slice(4, 8)), Number(s.slice(2, 4)) - 1, Number(s.slice(0, 2)));
+  }
+  return new Date(s + "T00:00:00");
+}
+function somarDias(d, dias) {
+  const novo = new Date(d);
+  novo.setDate(novo.getDate() + dias);
+  return novo;
+}
+// Converte valor monetário no formato brasileiro ("1.234,56") para número, sem quebrar com milhar
+function parseValorBR(v) {
+  if (v == null) return 0;
+  const normalizado = String(v).trim().replace(/\./g, "").replace(",", ".");
+  const n = Number(normalizado);
+  return isNaN(n) ? 0 : n;
+}
 
 // ── CACHE "QUENTE" DOS CADASTROS ──────────────────────────
 // Carrega uma vez no início e atualiza em segundo plano — as buscas do usuário
@@ -179,6 +198,11 @@ setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
 
 async function buscarHistorico(dataInicio, dataFim) {
+  // pagamentos costuma ter data de documento bem diferente da data do pedido (parcelas, prazos etc.),
+  // então busca numa janela bem mais larga que a do resto, pra não perder pagamento já quitado fora do período pedido
+  const dataInicioPg = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
+  const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
+
   const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos] = await Promise.all([
     gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
     gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
@@ -192,7 +216,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     gsbGetSeguro(gsbGet("fichas"), "fichas"),
     gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
     gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
-    gsbGetSeguro(gsbGetRange("pagamentos", dataInicio, dataFim), "pagamentos"),
+    gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
   ]);
 
   const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
@@ -249,15 +273,15 @@ async function buscarHistorico(dataInicio, dataFim) {
     if (!pg.idPedidoCompra) return;
     const chave = String(pg.idPedidoCompra);
     const atual = pagamentoPorPedido.get(chave) || { valorAberto: 0, valorTotal: 0, temRegistro: false };
-    atual.valorAberto += Number(String(pg.valorAberto || "0").replace(",", ".")) || 0;
-    atual.valorTotal += Number(String(pg.valor || "0").replace(",", ".")) || 0;
+    atual.valorAberto += parseValorBR(pg.valorAberto);
+    atual.valorTotal += parseValorBR(pg.valor);
     atual.temRegistro = true;
     pagamentoPorPedido.set(chave, atual);
   });
   function statusPagamentoDoPedido(idPedidoCompra) {
     const info = pagamentoPorPedido.get(String(idPedidoCompra));
     if (!info || !info.temRegistro) return { pago: false, valorAberto: null, valorTotal: null };
-    return { pago: info.valorAberto <= 0, valorAberto: info.valorAberto, valorTotal: info.valorTotal };
+    return { pago: info.valorAberto <= 0.01, valorAberto: info.valorAberto, valorTotal: info.valorTotal };
   }
 
   const pedidoInfoMap = new Map((pedidos || []).map((p) => {
