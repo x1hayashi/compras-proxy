@@ -382,25 +382,36 @@ async function buscarHistorico(dataInicio, dataFim) {
     return "amarelo";
   }
 
-  const listaSolicitacoes = (headers || [])
-    .filter((h) => itensPorSolic[h.idSolicitacaoCompra])
-    .map((h) => {
-      const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
-      const grupo = classificar(itensDaSolic);
-      const idCotacaoAchado = itensDaSolic.map((it) => it.idCotacao).find(Boolean) || null;
-      const idPedidoAchado = itensDaSolic.map((it) => it.idPedidoCompra).find(Boolean) || null;
+  const listaSolicitacoes = [];
+  (headers || []).forEach((h) => {
+    const itensDaSolic = itensPorSolic[h.idSolicitacaoCompra];
+    if (!itensDaSolic) return;
+
+    // Uma mesma solicitação pode virar mais de um pedido (itens aprovados para fornecedores
+    // diferentes). Agrupa os itens pelo pedido a que pertencem, pra cada pedido virar seu
+    // próprio card — sem sumir com nenhum deles.
+    const porPedido = {};
+    itensDaSolic.forEach((it) => {
+      const chave = it.idPedidoCompra ? `p${it.idPedidoCompra}` : "__sem_pedido__";
+      (porPedido[chave] = porPedido[chave] || []).push(it);
+    });
+
+    Object.entries(porPedido).forEach(([chave, itensGrupo]) => {
+      const grupo = classificar(itensGrupo);
+      const idCotacaoAchado = itensGrupo.map((it) => it.idCotacao).find(Boolean) || null;
+      const idPedidoAchado = chave === "__sem_pedido__" ? null : chave.slice(1);
       const cotInfo = idCotacaoAchado ? cotacaoInfoMap.get(String(idCotacaoAchado)) : null;
       const pedInfo = idPedidoAchado ? pedidoInfoMap.get(String(idPedidoAchado)) : null;
-      const idFichaCotacao = itensDaSolic.map((it) => it.cotacaoIdFicha).find(Boolean) || null;
+      const idFichaCotacao = itensGrupo.map((it) => it.cotacaoIdFicha).find(Boolean) || null;
       let corSolic = corDoGrupo(grupo);
       if (grupo === "pedido_aprovado_aberto" && pedInfo && pedInfo.pagamentoPago) corSolic = "vermelho";
-      return {
-        idSolicitacaoCompra: h.idSolicitacaoCompra,
+      listaSolicitacoes.push({
+        idSolicitacaoCompra: idPedidoAchado ? `${h.idSolicitacaoCompra}-p${idPedidoAchado}` : h.idSolicitacaoCompra,
         numeroSolicitacao: h.numeroSolicitacao,
         dataSolicitacao: h.dataSolicitacao,
         solicitante: funcMap.get(String(h.idSolicitante)) || `Func. ${h.idSolicitante}`,
         filialSigla: filialMap.get(String(h.idFilial)) || null,
-        itens: itensDaSolic,
+        itens: itensGrupo,
         grupo,
         cor: corSolic,
         numeroCotacao: cotInfo ? cotInfo.numero : null,
@@ -417,8 +428,9 @@ async function buscarHistorico(dataInicio, dataFim) {
         pagamentoPago: pedInfo ? pedInfo.pagamentoPago : null,
         pagamentoValorAberto: pedInfo ? pedInfo.pagamentoValorAberto : null,
         avulso: false,
-      };
+      });
     });
+  });
 
   // ── Pedidos lançados direto no GSB, sem passar por solicitação/cotação ──
   const itensPorPedido = {};
