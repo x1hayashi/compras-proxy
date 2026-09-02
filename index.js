@@ -368,6 +368,8 @@ async function buscarHistorico(dataInicio, dataFim) {
       const cotInfo = idCotacaoAchado ? cotacaoInfoMap.get(String(idCotacaoAchado)) : null;
       const pedInfo = idPedidoAchado ? pedidoInfoMap.get(String(idPedidoAchado)) : null;
       const idFichaCotacao = itensDaSolic.map((it) => it.cotacaoIdFicha).find(Boolean) || null;
+      let corSolic = corDoGrupo(grupo);
+      if (grupo === "pedido_aprovado_aberto" && pedInfo && pedInfo.pagamentoPago) corSolic = "vermelho";
       return {
         idSolicitacaoCompra: h.idSolicitacaoCompra,
         numeroSolicitacao: h.numeroSolicitacao,
@@ -376,7 +378,7 @@ async function buscarHistorico(dataInicio, dataFim) {
         filialSigla: filialMap.get(String(h.idFilial)) || null,
         itens: itensDaSolic,
         grupo,
-        cor: corDoGrupo(grupo),
+        cor: corSolic,
         numeroCotacao: cotInfo ? cotInfo.numero : null,
         dataCotacao: cotInfo ? cotInfo.data : null,
         cotador: cotInfo ? cotInfo.cotador : null,
@@ -424,12 +426,15 @@ async function buscarHistorico(dataInicio, dataFim) {
         const entregue = Number(pi.quantidadeEntregue || 0);
         return pedida > 0 && entregue >= pedida;
       });
-      const statusPg = todosEntregues ? statusPagamentoDoPedido(p.idPedidoCompra) : { pago: false, valorAberto: null };
+      const statusPg = statusPagamentoDoPedido(p.idPedidoCompra);
       let grupo;
       if (!statusAprovado) grupo = "pedido_aberto";
       else if (!todosEntregues) grupo = "pedido_aprovado_aberto";
       else grupo = statusPg.pago ? "pedido_aprovado_concluido" : "pedido_aguardando_pagamento";
-      const corPedido = grupo === "pedido_aberto" ? "amarelo" : (grupo === "pedido_aguardando_pagamento" ? "amarelo" : "verde");
+      let corPedido;
+      if (grupo === "pedido_aberto" || grupo === "pedido_aguardando_pagamento") corPedido = "amarelo";
+      else if (grupo === "pedido_aprovado_aberto") corPedido = statusPg.pago ? "vermelho" : "verde";
+      else corPedido = "verde";
       // se algum item veio de uma cotação (mesmo sem solicitação), resgata os dados da cotação também
       const idCotacaoOrigem = itensDoPedido.map((pi) => pi.idCotacaoLista && clParaCotacao.get(String(pi.idCotacaoLista))).find(Boolean) || null;
       const cotInfo = idCotacaoOrigem ? cotacaoInfoMap.get(String(idCotacaoOrigem)) : null;
