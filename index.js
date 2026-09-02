@@ -179,7 +179,7 @@ setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
 
 async function buscarHistorico(dataInicio, dataFim) {
-  const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos] = await Promise.all([
+  const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos] = await Promise.all([
     gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
     gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
     gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
@@ -192,6 +192,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     gsbGetSeguro(gsbGet("fichas"), "fichas"),
     gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
     gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
+    gsbGetSeguro(gsbGetRange("pagamentos", dataInicio, dataFim), "pagamentos"),
   ]);
 
   const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
@@ -242,13 +243,35 @@ async function buscarHistorico(dataInicio, dataFim) {
     return idFicha ? fichaNomeMap.get(String(idFicha)) || null : null;
   }
 
-  const pedidoInfoMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), {
-    numero: p.numeroPedido,
-    data: p.dataPedido,
-    comprador: funcMap.get(String(p.idFuncionarioComprador)) || null,
-    responsavel: funcMap.get(String(p.idFuncionarioResponsavel)) || null,
-    fornecedor: fornecedorDoPedido(p),
-  }]));
+  // idPedidoCompra -> {pago, valorAberto, valorTotal, temRegistro}
+  const pagamentoPorPedido = new Map();
+  (pagamentos || []).forEach((pg) => {
+    if (!pg.idPedidoCompra) return;
+    const chave = String(pg.idPedidoCompra);
+    const atual = pagamentoPorPedido.get(chave) || { valorAberto: 0, valorTotal: 0, temRegistro: false };
+    atual.valorAberto += Number(String(pg.valorAberto || "0").replace(",", ".")) || 0;
+    atual.valorTotal += Number(String(pg.valor || "0").replace(",", ".")) || 0;
+    atual.temRegistro = true;
+    pagamentoPorPedido.set(chave, atual);
+  });
+  function statusPagamentoDoPedido(idPedidoCompra) {
+    const info = pagamentoPorPedido.get(String(idPedidoCompra));
+    if (!info || !info.temRegistro) return { pago: false, valorAberto: null, valorTotal: null };
+    return { pago: info.valorAberto <= 0, valorAberto: info.valorAberto, valorTotal: info.valorTotal };
+  }
+
+  const pedidoInfoMap = new Map((pedidos || []).map((p) => {
+    const statusPg = statusPagamentoDoPedido(p.idPedidoCompra);
+    return [String(p.idPedidoCompra), {
+      numero: p.numeroPedido,
+      data: p.dataPedido,
+      comprador: funcMap.get(String(p.idFuncionarioComprador)) || null,
+      responsavel: funcMap.get(String(p.idFuncionarioResponsavel)) || null,
+      fornecedor: fornecedorDoPedido(p),
+      pagamentoPago: statusPg.pago,
+      pagamentoValorAberto: statusPg.valorAberto,
+    }];
+  }));
   const clParaCotacao = new Map((cotacoesListas || []).map((cl) => [String(cl.idCotacaoLista), cl.idCotacao]));
 
   // idSolicitacaoCompraItem -> {idCotacao, status}
@@ -315,7 +338,10 @@ async function buscarHistorico(dataInicio, dataFim) {
         const entregue = Number(it.pedidoQuantidadeEntregue || 0);
         return pedida > 0 && entregue >= pedida;
       });
-      return todosEntregues ? "pedido_aprovado_concluido" : "pedido_aprovado_aberto";
+      if (!todosEntregues) return "pedido_aprovado_aberto";
+      const idPedido = itensAprovados.map((it) => it.idPedidoCompra).find(Boolean);
+      const statusPg = statusPagamentoDoPedido(idPedido);
+      return statusPg.pago ? "pedido_aprovado_concluido" : "pedido_aguardando_pagamento";
     }
     const temPedido = itensDaSolic.some((it) => it.idPedidoCompra);
     if (temPedido) return "pedido_aberto";
@@ -362,6 +388,8 @@ async function buscarHistorico(dataInicio, dataFim) {
         compradorPedido: pedInfo ? pedInfo.comprador : null,
         responsavelPedido: pedInfo ? pedInfo.responsavel : null,
         fornecedorPedido: pedInfo ? pedInfo.fornecedor : null,
+        pagamentoPago: pedInfo ? pedInfo.pagamentoPago : null,
+        pagamentoValorAberto: pedInfo ? pedInfo.pagamentoValorAberto : null,
         avulso: false,
       };
     });
@@ -396,7 +424,12 @@ async function buscarHistorico(dataInicio, dataFim) {
         const entregue = Number(pi.quantidadeEntregue || 0);
         return pedida > 0 && entregue >= pedida;
       });
-      const grupo = !statusAprovado ? "pedido_aberto" : (todosEntregues ? "pedido_aprovado_concluido" : "pedido_aprovado_aberto");
+      const statusPg = todosEntregues ? statusPagamentoDoPedido(p.idPedidoCompra) : { pago: false, valorAberto: null };
+      let grupo;
+      if (!statusAprovado) grupo = "pedido_aberto";
+      else if (!todosEntregues) grupo = "pedido_aprovado_aberto";
+      else grupo = statusPg.pago ? "pedido_aprovado_concluido" : "pedido_aguardando_pagamento";
+      const corPedido = grupo === "pedido_aberto" ? "amarelo" : (grupo === "pedido_aguardando_pagamento" ? "amarelo" : "verde");
       // se algum item veio de uma cotação (mesmo sem solicitação), resgata os dados da cotação também
       const idCotacaoOrigem = itensDoPedido.map((pi) => pi.idCotacaoLista && clParaCotacao.get(String(pi.idCotacaoLista))).find(Boolean) || null;
       const cotInfo = idCotacaoOrigem ? cotacaoInfoMap.get(String(idCotacaoOrigem)) : null;
@@ -414,7 +447,7 @@ async function buscarHistorico(dataInicio, dataFim) {
         filialSigla: filialMap.get(String(p.idFilial)) || null,
         itens: itensFormatados,
         grupo,
-        cor: statusAprovado ? "verde" : "amarelo",
+        cor: corPedido,
         numeroCotacao: cotInfo ? cotInfo.numero : null,
         dataCotacao: cotInfo ? cotInfo.data : null,
         cotador: cotInfo ? cotInfo.cotador : null,
@@ -426,6 +459,8 @@ async function buscarHistorico(dataInicio, dataFim) {
         compradorPedido: funcMap.get(String(p.idFuncionarioComprador)) || null,
         responsavelPedido: funcMap.get(String(p.idFuncionarioResponsavel)) || null,
         fornecedorPedido: fornecedorDoPedido(p),
+        pagamentoPago: statusPg.pago,
+        pagamentoValorAberto: statusPg.valorAberto,
         avulso: true,
       };
     });
