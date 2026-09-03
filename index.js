@@ -203,26 +203,43 @@ async function buscarHistorico(dataInicio, dataFim) {
   const dataInicioPg = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
   const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
 
-  // solicitação/cotação podem ser bem mais antigas que o pedido que geraram (prazo de entrega longo,
-  // item que ficou meses cotando etc.) — busca esses também numa janela mais larga pra trás, senão um
-  // pedido recente cuja solicitação é antiga não encontra o vínculo e some do app
-  const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
-
-  const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos] = await Promise.all([
-    gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras"),
-    gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataFim), "solicitacoescomprasitens"),
+  let [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos] = await Promise.all([
+    gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
+    gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
     gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
     gsbGetSeguro(gsbGet("filiais"), "filiais"),
-    gsbGetSeguro(gsbGetRange("cotacoes", dataInicioAmpliada, dataFim), "cotacoes"),
-    gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicioAmpliada, dataFim), "cotacoeslistas"),
+    gsbGetSeguro(gsbGetRange("cotacoes", dataInicio, dataFim), "cotacoes"),
+    gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicio, dataFim), "cotacoeslistas"),
     gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicio, dataFim), "pedidoscompras"),
     gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicio, dataFim), "pedidoscomprasitens"),
     gsbGetSeguro(gsbGet("unidadesfaturamentos"), "unidadesfaturamentos"),
     gsbGetSeguro(gsbGet("fichas"), "fichas"),
-    gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicioAmpliada, dataFim), "cotacoesfornecedores"),
-    gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicioAmpliada, dataFim), "cotacoesprodutos"),
+    gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
+    gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
     gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
   ]);
+
+  // Um pedido/cotação recente pode apontar pra uma solicitação bem mais antiga (prazo de entrega
+  // longo, item que ficou meses cotando etc.) que não veio nessa janela de 90 dias. Só nesse caso
+  // (raro) busca solicitações num período mais largo pra trás — evita pesar a consulta no dia a dia.
+  const idsConhecidos = new Set((itens || []).map((it) => String(it.idSolicitacaoCompraItem)));
+  const temOrfao =
+    (pedidosItens || []).some((pi) => pi.idSolicitacaoCompraItem && !idsConhecidos.has(String(pi.idSolicitacaoCompraItem))) ||
+    (cotacoesListas || []).some((cl) => cl.idSolicitacaoCompraItem && !idsConhecidos.has(String(cl.idSolicitacaoCompraItem)));
+
+  if (temOrfao) {
+    const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
+    const [headersExtra, itensExtra] = await Promise.all([
+      gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataInicio), "solicitacoescompras (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataInicio), "solicitacoescomprasitens (busca ampliada)"),
+    ]);
+    const idsHeadersConhecidos = new Set((headers || []).map((h) => String(h.idSolicitacaoCompra)));
+    (headersExtra || []).forEach((h) => {
+      if (!idsHeadersConhecidos.has(String(h.idSolicitacaoCompra))) { headers.push(h); idsHeadersConhecidos.add(String(h.idSolicitacaoCompra)); }
+    });
+    itens = (itens || []).concat(itensExtra || []);
+    console.log(`Vínculo órfão detectado — busca ampliada trouxe +${(headersExtra || []).length} solicitações e +${(itensExtra || []).length} itens`);
+  }
 
   const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
   const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
