@@ -203,7 +203,7 @@ async function buscarHistorico(dataInicio, dataFim) {
   const dataInicioPg = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
   const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
 
-  let [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos] = await Promise.all([
+  let [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos, notasComprasItens] = await Promise.all([
     gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
     gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
     gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
@@ -217,6 +217,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
     gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
     gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
+    gsbGetSeguro(gsbGetRange("notascomprasitens", dataInicioPg, dataFimPg), "notascomprasitens"),
   ]);
 
   // Um pedido/cotação recente pode apontar pra uma solicitação bem mais antiga (prazo de entrega
@@ -290,15 +291,37 @@ async function buscarHistorico(dataInicio, dataFim) {
   }
 
   // idPedidoCompra -> {pago, valorAberto, valorTotal, temRegistro}
+  // idPedidoCompraItem -> idPedidoCompra (pra resolver pagamento vinculado só pela nota fiscal)
+  const pedidoCompraItemParaPedido = new Map((pedidosItens || []).map((pi) => [String(pi.idPedidoCompraItem), pi.idPedidoCompra]));
+  // idNotaCompra -> Set de idPedidoCompra cobertos por essa nota (via itens da nota)
+  const notaParaPedidos = new Map();
+  (notasComprasItens || []).forEach((ni) => {
+    if (!ni.idPedidoCompraItem) return;
+    const idPedido = pedidoCompraItemParaPedido.get(String(ni.idPedidoCompraItem));
+    if (!idPedido) return;
+    const chave = String(ni.idNotaCompra);
+    const lista = notaParaPedidos.get(chave) || new Set();
+    lista.add(String(idPedido));
+    notaParaPedidos.set(chave, lista);
+  });
+
   const pagamentoPorPedido = new Map();
   (pagamentos || []).forEach((pg) => {
-    if (!pg.idPedidoCompra) return;
-    const chave = String(pg.idPedidoCompra);
-    const atual = pagamentoPorPedido.get(chave) || { valorAberto: 0, valorTotal: 0, temRegistro: false };
-    atual.valorAberto += parseValorBR(pg.valorAberto);
-    atual.valorTotal += parseValorBR(pg.valor);
-    atual.temRegistro = true;
-    pagamentoPorPedido.set(chave, atual);
+    // um pagamento pode estar vinculado direto ao pedido, ou só à nota fiscal de compra
+    // (que por sua vez está vinculada ao pedido através dos itens dela)
+    const pedidosAtingidos = new Set();
+    if (pg.idPedidoCompra) pedidosAtingidos.add(String(pg.idPedidoCompra));
+    if (pg.idNotaCompra) {
+      const viaNota = notaParaPedidos.get(String(pg.idNotaCompra));
+      if (viaNota) viaNota.forEach((idPed) => pedidosAtingidos.add(idPed));
+    }
+    pedidosAtingidos.forEach((chave) => {
+      const atual = pagamentoPorPedido.get(chave) || { valorAberto: 0, valorTotal: 0, temRegistro: false };
+      atual.valorAberto += parseValorBR(pg.valorAberto);
+      atual.valorTotal += parseValorBR(pg.valor);
+      atual.temRegistro = true;
+      pagamentoPorPedido.set(chave, atual);
+    });
   });
   function statusPagamentoDoPedido(idPedidoCompra) {
     const info = pagamentoPorPedido.get(String(idPedidoCompra));
