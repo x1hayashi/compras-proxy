@@ -327,10 +327,12 @@ async function buscarHistorico(dataInicio, dataFim) {
     const st = (it.status || "").toLowerCase();
     const aprovado = st.startsWith("aprovad");
     const aguardando = st.includes("aguardando");
-    if (!aprovado && !aguardando) return;
-    const prod = produtoMap.get(String(it.idProduto));
     const cot = itemParaCotacao.get(String(it.idSolicitacaoCompraItem)) || null;
     const ped = itemParaPedido.get(String(it.idSolicitacaoCompraItem)) || null;
+    // só ignora o item se ele realmente não tem status relevante NEM progrediu pra cotação/pedido —
+    // um texto de status diferente do esperado não pode fazer um pedido já existente sumir do app
+    if (!aprovado && !aguardando && !cot && !ped) return;
+    const prod = produtoMap.get(String(it.idProduto));
     const precoCot = cot ? itemCotacaoPreco.get(`${cot.idCotacao}_${it.idProduto}`) : null;
     const propostasCot = cot ? (itemCotacaoTodasPropostas.get(`${cot.idCotacao}_${it.idProduto}`) || []) : [];
     const lista = (itensPorSolic[it.idSolicitacaoCompra] = itensPorSolic[it.idSolicitacaoCompra] || []);
