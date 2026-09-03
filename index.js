@@ -203,19 +203,24 @@ async function buscarHistorico(dataInicio, dataFim) {
   const dataInicioPg = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
   const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
 
+  // solicitação/cotação podem ser bem mais antigas que o pedido que geraram (prazo de entrega longo,
+  // item que ficou meses cotando etc.) — busca esses também numa janela mais larga pra trás, senão um
+  // pedido recente cuja solicitação é antiga não encontra o vínculo e some do app
+  const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
+
   const [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos] = await Promise.all([
-    gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
-    gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
+    gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras"),
+    gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataFim), "solicitacoescomprasitens"),
     gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
     gsbGetSeguro(gsbGet("filiais"), "filiais"),
-    gsbGetSeguro(gsbGetRange("cotacoes", dataInicio, dataFim), "cotacoes"),
-    gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicio, dataFim), "cotacoeslistas"),
+    gsbGetSeguro(gsbGetRange("cotacoes", dataInicioAmpliada, dataFim), "cotacoes"),
+    gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicioAmpliada, dataFim), "cotacoeslistas"),
     gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicio, dataFim), "pedidoscompras"),
     gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicio, dataFim), "pedidoscomprasitens"),
     gsbGetSeguro(gsbGet("unidadesfaturamentos"), "unidadesfaturamentos"),
     gsbGetSeguro(gsbGet("fichas"), "fichas"),
-    gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
-    gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
+    gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicioAmpliada, dataFim), "cotacoesfornecedores"),
+    gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicioAmpliada, dataFim), "cotacoesprodutos"),
     gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
   ]);
 
