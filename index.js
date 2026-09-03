@@ -829,6 +829,71 @@ http.createServer(async (req, res) => {
     }
 
     // ── ADMIN: gestão de usuários (mesma tabela da oficina) ──
+    // ── DIAGNÓSTICO: por que um pedido específico não aparece no app ──
+    if (req.method === "GET" && p === "/admin/debug-pedido") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const numero = (parsed.query.numero || "").toString().trim();
+      if (!numero) return json(res, 400, { error: "Informe ?numero=" });
+
+      const fim = new Date();
+      const inicio = new Date();
+      inicio.setDate(inicio.getDate() - 730); // 2 anos, bem largo, só pra achar o registro
+      const dIni = formatarDataGSB(inicio);
+      const dFim = formatarDataGSB(fim);
+
+      try {
+        const [pedidos, pedidosItens, itensSolic, headers, filiais] = await Promise.all([
+          gsbGetRange("pedidoscompras", dIni, dFim),
+          gsbGetRange("pedidoscomprasitens", dIni, dFim),
+          gsbGetRange("solicitacoescomprasitens", dIni, dFim),
+          gsbGetRange("solicitacoescompras", dIni, dFim),
+          gsbGet("filiais"),
+        ]);
+
+        const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+        const pedidosAchados = (pedidos || []).filter((p2) => String(p2.numeroPedido) === numero);
+
+        const detalhe = pedidosAchados.map((p2) => {
+          const itensDoPedido = (pedidosItens || []).filter((pi) => String(pi.idPedidoCompra) === String(p2.idPedidoCompra));
+          const itensComOrigem = itensDoPedido.map((pi) => {
+            const itemSolic = pi.idSolicitacaoCompraItem
+              ? (itensSolic || []).find((is) => String(is.idSolicitacaoCompraItem) === String(pi.idSolicitacaoCompraItem))
+              : null;
+            const solicHeader = itemSolic
+              ? (headers || []).find((h) => String(h.idSolicitacaoCompra) === String(itemSolic.idSolicitacaoCompra))
+              : null;
+            return {
+              idProduto: pi.idProduto,
+              quantidade: pi.quantidade,
+              quantidadeEntregue: pi.quantidadeEntregue,
+              idSolicitacaoCompraItem: pi.idSolicitacaoCompraItem || null,
+              statusDoItemNaSolicitacao: itemSolic ? itemSolic.status : (pi.idSolicitacaoCompraItem ? "⚠️ item não encontrado na janela de 2 anos" : "sem vínculo (avulso)"),
+              solicitacao: solicHeader ? { numero: solicHeader.numeroSolicitacao, data: solicHeader.dataSolicitacao, idFilial: solicHeader.idFilial } : null,
+            };
+          });
+          return {
+            idPedidoCompra: p2.idPedidoCompra,
+            numeroPedido: p2.numeroPedido,
+            statusPedido: p2.statusPedido,
+            dataPedido: p2.dataPedido,
+            idFilial: p2.idFilial,
+            siglaFilial: filialMap.get(String(p2.idFilial)) || "⚠️ não é HGO/HBA — por isso não aparece no app",
+            itens: itensComOrigem,
+          };
+        });
+
+        return json(res, 200, {
+          numeroBuscado: numero,
+          janelaBuscada: `${dIni} até ${dFim}`,
+          encontrados: detalhe.length,
+          pedidos: detalhe,
+        });
+      } catch (e) {
+        return json(res, 500, { error: "Erro ao investigar: " + e.message });
+      }
+    }
+
     if (req.method === "GET" && p === "/admin/usuarios") {
       const user = await getSession(req);
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
