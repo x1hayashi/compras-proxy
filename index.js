@@ -222,7 +222,9 @@ async function buscarHistorico(dataInicio, dataFim) {
 
   // Um pedido/cotação recente pode apontar pra uma solicitação bem mais antiga (prazo de entrega
   // longo, item que ficou meses cotando etc.) que não veio nessa janela de 90 dias. Só nesse caso
-  // (raro) busca solicitações num período mais largo pra trás — evita pesar a consulta no dia a dia.
+  // (raro) refaz a busca de toda a cadeia (solicitação → cotação → pedido) numa janela mais larga —
+  // isso evita tanto perder o processo quanto ele aparecer "parado" numa etapa anterior por a
+  // cotação/pedido dele também não terem sido buscados na janela maior.
   const idsConhecidos = new Set((itens || []).map((it) => String(it.idSolicitacaoCompraItem)));
   const temOrfao =
     (pedidosItens || []).some((pi) => pi.idSolicitacaoCompraItem && !idsConhecidos.has(String(pi.idSolicitacaoCompraItem))) ||
@@ -230,16 +232,17 @@ async function buscarHistorico(dataInicio, dataFim) {
 
   if (temOrfao) {
     const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
-    const [headersExtra, itensExtra] = await Promise.all([
-      gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataInicio), "solicitacoescompras (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataInicio), "solicitacoescomprasitens (busca ampliada)"),
+    [headers, itens, cotacoes, cotacoesListas, cotacoesFornecedores, cotacoesProdutos, pedidos, pedidosItens] = await Promise.all([
+      gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataFim), "solicitacoescomprasitens (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("cotacoes", dataInicioAmpliada, dataFim), "cotacoes (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicioAmpliada, dataFim), "cotacoeslistas (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicioAmpliada, dataFim), "cotacoesfornecedores (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicioAmpliada, dataFim), "cotacoesprodutos (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicioAmpliada, dataFim), "pedidoscompras (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicioAmpliada, dataFim), "pedidoscomprasitens (busca ampliada)"),
     ]);
-    const idsHeadersConhecidos = new Set((headers || []).map((h) => String(h.idSolicitacaoCompra)));
-    (headersExtra || []).forEach((h) => {
-      if (!idsHeadersConhecidos.has(String(h.idSolicitacaoCompra))) { headers.push(h); idsHeadersConhecidos.add(String(h.idSolicitacaoCompra)); }
-    });
-    itens = (itens || []).concat(itensExtra || []);
-    console.log(`Vínculo órfão detectado — busca ampliada trouxe +${(headersExtra || []).length} solicitações e +${(itensExtra || []).length} itens`);
+    console.log(`Vínculo órfão detectado — refeita a busca inteira de ${dataInicioAmpliada} até ${dataFim} (${(headers||[]).length} solicitações)`);
   }
 
   const funcMap = new Map((funcionarios || []).map((f) => [String(f.idFuncionario), f.nome]));
