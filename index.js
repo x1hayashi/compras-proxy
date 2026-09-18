@@ -825,6 +825,7 @@ http.createServer(async (req, res) => {
         descricao_produto: it.descricaoProduto,
         quantidade: it.quantidade,
         unidade: it.unidade || null,
+        link_produto: it.linkProduto || null,
       }));
       await sbInsert("solicitacoescompras_itens", itensPayload);
 
