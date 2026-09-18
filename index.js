@@ -754,6 +754,16 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/gsb/historico-solicitacoes") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
+      const podeVerFinanceiro = !!(user.admin || user.acesso_financeiro);
+      function removerDadosFinanceiros(lista) {
+        if (podeVerFinanceiro) return lista;
+        return (lista || []).map((s) => {
+          const copia = { ...s };
+          delete copia.pagamentoPago;
+          delete copia.pagamentoValorAberto;
+          return copia;
+        });
+      }
       const { inicio, fim } = parsed.query;
       if (inicio || fim) {
         // período customizado: busca ao vivo, não usa o cache padrão de 90 dias
@@ -761,13 +771,13 @@ http.createServer(async (req, res) => {
         const dFim = fim ? formatarDataGSB(new Date(fim + "T00:00:00")) : formatarDataGSB(new Date());
         try {
           const dados = await buscarHistorico(dInicio, dFim);
-          return json(res, 200, dados);
+          return json(res, 200, removerDadosFinanceiros(dados));
         } catch (e) {
           return json(res, 500, { error: "Erro ao buscar histórico: " + e.message });
         }
       }
       if (Date.now() - new Date(HIST_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarHistorico();
-      return json(res, 200, HIST_CACHE.data);
+      return json(res, 200, removerDadosFinanceiros(HIST_CACHE.data));
     }
 
     // ── SOLICITAÇÕES DE COMPRA ────────────────────────────
@@ -942,7 +952,7 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/admin/usuarios") {
       const user = await getSession(req);
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
-      const rows = await sbGet("usuarios", `select=id,nome,whatsapp,filial,status,admin&order=nome.asc`);
+      const rows = await sbGet("usuarios", `select=id,nome,whatsapp,filial,status,admin,acesso_financeiro&order=nome.asc`);
       return json(res, 200, rows || []);
     }
 
@@ -954,6 +964,7 @@ http.createServer(async (req, res) => {
       const upd = {};
       if (body.status) upd.status = body.status;
       if (typeof body.admin === "boolean") upd.admin = body.admin;
+      if (typeof body.acesso_financeiro === "boolean") upd.acesso_financeiro = body.acesso_financeiro;
       await sbPatch("usuarios", upd, `id=eq.${id}`);
       return json(res, 200, { ok: true });
     }
