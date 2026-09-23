@@ -190,9 +190,11 @@ async function atualizarCache() {
 (async () => {
   await atualizarCache();       // produtos/filiais/setores primeiro
   await atualizarHistorico();   // depois o histórico, já usando os produtos em cache
+  await atualizarPagamentos();
 })();
 setInterval(atualizarCache, 6 * 60 * 60 * 1000);       // atualiza a cada 6 horas
 setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
+setInterval(atualizarPagamentos, 30 * 60 * 1000);      // atualiza a cada 30 min
 
 // ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB) ──
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
@@ -630,6 +632,88 @@ async function buscarHistorico(dataInicio, dataFim) {
     });
 }
 
+// ── PAGAMENTOS EM ABERTO (semana atual) ─────────────────────
+let PAGAMENTOS_CACHE = { data: [], atualizadoEm: null, atualizando: false };
+
+function parseDataBR(s) {
+  if (!s) return null;
+  const parte = s.split(" ")[0];
+  const partes = parte.split("/").map(Number);
+  if (partes.length !== 3 || !partes[0] || !partes[1] || !partes[2]) return null;
+  return new Date(partes[2], partes[1] - 1, partes[0]);
+}
+function inicioFimSemanaAtual() {
+  const hoje = new Date();
+  const diaSemana = hoje.getDay(); // 0=domingo
+  const diffSegunda = diaSemana === 0 ? -6 : 1 - diaSemana;
+  const segunda = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() + diffSegunda);
+  const domingo = new Date(segunda.getFullYear(), segunda.getMonth(), segunda.getDate() + 6, 23, 59, 59, 999);
+  return { inicio: segunda, fim: domingo };
+}
+
+async function atualizarPagamentos() {
+  if (PAGAMENTOS_CACHE.atualizando) return;
+  PAGAMENTOS_CACHE.atualizando = true;
+  try {
+    const inicio = new Date();
+    inicio.setDate(inicio.getDate() - 1095); // ~3 anos pra trás — cobre vencimento renegociado de título antigo
+    const fimBusca = new Date();
+    fimBusca.setDate(fimBusca.getDate() + 120);
+    const dIni = formatarDataGSB(inicio);
+    const dFim = formatarDataGSB(fimBusca);
+
+    const [pagamentos, filiais, fichas, tiposMovimento, pedidos, cotacoes] = await Promise.all([
+      gsbGetSeguro(gsbGetRange("pagamentos", dIni, dFim), "pagamentos"),
+      gsbGetSeguro(gsbGet("filiais"), "filiais"),
+      gsbGetSeguro(gsbGet("fichas"), "fichas"),
+      gsbGetSeguro(gsbGet("tiposmovimentos"), "tiposmovimentos"),
+      gsbGetSeguro(gsbGetRange("pedidoscompras", dIni, dFim), "pedidoscompras"),
+      gsbGetSeguro(gsbGetRange("cotacoes", dIni, dFim), "cotacoes"),
+    ]);
+
+    const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+    const fichaMap = new Map((fichas || []).map((f) => [String(f.idFicha), f.razao]));
+    const movMap = new Map((tiposMovimento || []).map((m) => [String(m.idTipoMovimento), m.descricaoMovimento]));
+    const pedidoMap = new Map((pedidos || []).map((pd) => [String(pd.idPedidoCompra), pd]));
+    const cotacaoNumeroMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.numeroCotacao]));
+
+    const { inicio: segunda, fim: domingo } = inicioFimSemanaAtual();
+
+    PAGAMENTOS_CACHE.data = (pagamentos || [])
+      .filter((pg) => parseValorBR(pg.valorAberto) > 0)
+      .filter((pg) => {
+        const venc = parseDataBR(pg.novoVencimento || pg.dataVencimento);
+        return venc && venc >= segunda && venc <= domingo;
+      })
+      .filter((pg) => FILIAIS_PERMITIDAS.includes((filialMap.get(String(pg.idFilial)) || "").toUpperCase()))
+      .map((pg) => {
+        const pedido = pg.idPedidoCompra ? pedidoMap.get(String(pg.idPedidoCompra)) : null;
+        return {
+          idPagamento: pg.idPagamento,
+          siglaFilial: filialMap.get(String(pg.idFilial)) || null,
+          fornecedor: fichaMap.get(String(pg.idFicha)) || null,
+          sacado: fichaMap.get(String(pg.idFichaSacado)) || null,
+          valorAberto: parseValorBR(pg.valorAberto),
+          tipoMovimento: movMap.get(String(pg.idTipoMovimento)) || null,
+          observacao: pg.observacao || null,
+          novoVencimento: pg.novoVencimento || pg.dataVencimento || null,
+          idPedidoCompra: pg.idPedidoCompra || null,
+          numeroPedido: pedido ? pedido.numeroPedido : null,
+          idCotacao: pedido ? pedido.idCotacao : null,
+          numeroCotacao: pedido && pedido.idCotacao ? cotacaoNumeroMap.get(String(pedido.idCotacao)) : null,
+        };
+      })
+      .sort((a, b) => parseDataBR(a.novoVencimento) - parseDataBR(b.novoVencimento));
+
+    PAGAMENTOS_CACHE.atualizadoEm = new Date().toISOString();
+    console.log(`Pagamentos em aberto atualizados: ${PAGAMENTOS_CACHE.data.length} (semana ${formatarDataGSB(segunda)} a ${formatarDataGSB(domingo)})`);
+  } catch (e) {
+    console.error("Erro ao atualizar pagamentos:", e.message);
+  } finally {
+    PAGAMENTOS_CACHE.atualizando = false;
+  }
+}
+
 async function atualizarHistorico() {
   if (HIST_CACHE.atualizando) return;
   HIST_CACHE.atualizando = true;
@@ -781,6 +865,37 @@ http.createServer(async (req, res) => {
       }
       if (Date.now() - new Date(HIST_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarHistorico();
       return json(res, 200, removerDadosFinanceiros(HIST_CACHE.data));
+    }
+
+    // ── PAGAMENTOS EM ABERTO (semana atual) — só quem tem acesso financeiro ──
+    if (req.method === "GET" && p === "/gsb/pagamentos-abertos") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      if (!user.admin && !user.acesso_financeiro) return json(res, 403, { error: "Sem acesso financeiro" });
+      if (Date.now() - new Date(PAGAMENTOS_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarPagamentos();
+      return json(res, 200, PAGAMENTOS_CACHE.data);
+    }
+
+    // ── DETALHE DE UM PEDIDO ESPECÍFICO (aberto a partir da tela de Pagamentos) ──
+    if (req.method === "GET" && p === "/gsb/detalhe-pedido") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      if (!user.admin && !user.acesso_financeiro) return json(res, 403, { error: "Sem acesso financeiro" });
+      const idPedidoCompra = (parsed.query.id || "").toString();
+      if (!idPedidoCompra) return json(res, 400, { error: "Informe ?id=" });
+      try {
+        const fim = new Date();
+        const inicio = new Date();
+        inicio.setDate(inicio.getDate() - 730);
+        const dados = await buscarHistorico(formatarDataGSB(inicio), formatarDataGSB(fim));
+        const encontrado = dados.find(
+          (s) => s.itens.some((it) => String(it.idPedidoCompra) === idPedidoCompra) || s.idSolicitacaoCompra === `pedido-${idPedidoCompra}`
+        );
+        if (!encontrado) return json(res, 404, { error: "Detalhe não encontrado (o pedido pode estar fora da janela de 2 anos)" });
+        return json(res, 200, encontrado);
+      } catch (e) {
+        return json(res, 500, { error: "Erro ao buscar detalhe: " + e.message });
+      }
     }
 
     // ── SOLICITAÇÕES DE COMPRA ────────────────────────────
