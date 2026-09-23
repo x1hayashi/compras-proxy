@@ -701,6 +701,7 @@ async function atualizarPagamentos() {
           numeroPedido: pedido ? pedido.numeroPedido : null,
           idCotacao: pedido ? pedido.idCotacao : null,
           numeroCotacao: pedido && pedido.idCotacao ? cotacaoNumeroMap.get(String(pedido.idCotacao)) : null,
+          dataPedido: pedido ? pedido.dataPedido : null,
         };
       })
       .sort((a, b) => parseDataBR(a.novoVencimento) - parseDataBR(b.novoVencimento));
@@ -883,15 +884,28 @@ http.createServer(async (req, res) => {
       if (!user.admin && !user.acesso_financeiro) return json(res, 403, { error: "Sem acesso financeiro" });
       const idPedidoCompra = (parsed.query.id || "").toString();
       if (!idPedidoCompra) return json(res, 400, { error: "Informe ?id=" });
+      const dataRef = (parsed.query.data || "").toString();
       try {
-        const fim = new Date();
-        const inicio = new Date();
-        inicio.setDate(inicio.getDate() - 730);
-        const dados = await buscarHistorico(formatarDataGSB(inicio), formatarDataGSB(fim));
+        let dIni, dFim;
+        if (dataRef) {
+          // já sabemos a data exata do pedido (veio da tela de Pagamentos) — busca só perto dela,
+          // bem mais rápido. Se a solicitação de origem for muito mais antiga, a própria busca
+          // ampliada (órfão) do buscarHistorico já resolve isso sozinha.
+          const d = new Date(dataRef + "T00:00:00");
+          dIni = formatarDataGSB(somarDias(d, -90));
+          dFim = formatarDataGSB(somarDias(d, 15));
+        } else {
+          const fim = new Date();
+          const inicio = new Date();
+          inicio.setDate(inicio.getDate() - 730);
+          dIni = formatarDataGSB(inicio);
+          dFim = formatarDataGSB(fim);
+        }
+        const dados = await buscarHistorico(dIni, dFim);
         const encontrado = dados.find(
           (s) => s.itens.some((it) => String(it.idPedidoCompra) === idPedidoCompra) || s.idSolicitacaoCompra === `pedido-${idPedidoCompra}`
         );
-        if (!encontrado) return json(res, 404, { error: "Detalhe não encontrado (o pedido pode estar fora da janela de 2 anos)" });
+        if (!encontrado) return json(res, 404, { error: "Detalhe não encontrado nessa janela de datas" });
         return json(res, 200, encontrado);
       } catch (e) {
         return json(res, 500, { error: "Erro ao buscar detalhe: " + e.message });
