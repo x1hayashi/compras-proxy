@@ -88,7 +88,10 @@ function gsbFetch(gsbPath) {
         res.on("data", (c) => (chunks += c));
         res.on("end", () => {
           try {
-            resolve(JSON.parse(chunks));
+            const dados = JSON.parse(chunks);
+            // Algumas consultas do GSB retornam um objeto solto (não uma lista) quando só há 1 resultado —
+            // normaliza sempre pra lista, já que todo o resto do código espera .map/.filter/.forEach
+            resolve(Array.isArray(dados) ? dados : (dados ? [dados] : []));
           } catch (e) {
             reject(new Error(`Falha ao interpretar resposta do GSB em ${gsbPath} (status ${res.statusCode}, ${chunks.length} bytes): ${e.message}`));
           }
