@@ -129,6 +129,13 @@ function somarDias(d, dias) {
   novo.setDate(novo.getDate() + dias);
   return novo;
 }
+// Converte qualquer valor pra string minúscula com segurança — o GSB às vezes devolve um campo de
+// status como algo que não é string (número, objeto), e (x||"").toLowerCase() quebra nesses casos
+function strLower(v) {
+  if (typeof v === "string") return v.toLowerCase();
+  if (v == null) return "";
+  try { return String(v).toLowerCase(); } catch { return ""; }
+}
 // Converte valor monetário no formato brasileiro ("1.234,56") para número, sem quebrar com milhar
 function parseValorBR(v) {
   if (v == null) return 0;
@@ -276,7 +283,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     const cf = cotacaoFornecedorMap.get(String(cp.idCotacaoFornecedor));
     if (!cf) return;
     const key = `${cf.idCotacao}_${cp.idProduto}`;
-    const aprovado = (cp.statusAprovado || "").toLowerCase().startsWith("aprovad");
+    const aprovado = strLower(cp.statusAprovado).startsWith("aprovad");
     const proposta = {
       idFicha: cf.idFicha,
       fornecedor: fichaNomeMap.get(String(cf.idFicha)) || null,
@@ -377,7 +384,7 @@ async function buscarHistorico(dataInicio, dataFim) {
 
   const itensPorSolic = {};
   (itens || []).forEach((it) => {
-    const st = (it.status || "").toLowerCase();
+    const st = strLower(it.status);
     const aprovado = st.startsWith("aprovad");
     const aguardando = st.includes("aguardando");
     const cot = itemParaCotacao.get(String(it.idSolicitacaoCompraItem)) || null;
@@ -410,7 +417,7 @@ async function buscarHistorico(dataInicio, dataFim) {
   });
 
   function classificar(itensDaSolic) {
-    const itensAprovados = itensDaSolic.filter((it) => it.pedidoStatus && it.pedidoStatus.toLowerCase().startsWith("aprovad"));
+    const itensAprovados = itensDaSolic.filter((it) => strLower(it.pedidoStatus).startsWith("aprovad"));
     if (itensAprovados.length) {
       const todosEntregues = itensAprovados.every((it) => {
         const pedida = Number(it.pedidoQuantidadePedida || 0);
@@ -424,12 +431,12 @@ async function buscarHistorico(dataInicio, dataFim) {
     }
     const temPedido = itensDaSolic.some((it) => it.idPedidoCompra);
     if (temPedido) return "pedido_aberto";
-    const temCotacaoAprovada = itensDaSolic.some((it) => it.cotacaoStatus && it.cotacaoStatus.toLowerCase().startsWith("aprovad"));
+    const temCotacaoAprovada = itensDaSolic.some((it) => strLower(it.cotacaoStatus).startsWith("aprovad"));
     if (temCotacaoAprovada) return "cotacao_aprovada";
     const temCotacao = itensDaSolic.some((it) => it.idCotacao);
     if (temCotacao) return "em_cotacao";
     // sem cotação nem pedido ainda: separa quem já foi aprovado de quem ainda aguarda aprovação
-    const todosAprovados = itensDaSolic.every((it) => (it.status || "").toLowerCase().startsWith("aprovad"));
+    const todosAprovados = itensDaSolic.every((it) => strLower(it.status).startsWith("aprovad"));
     return todosAprovados ? "aprovada_sem_cotacao" : "aberto";
   }
   function corDoGrupo(grupo) {
@@ -511,7 +518,7 @@ async function buscarHistorico(dataInicio, dataFim) {
           quantidadeEntregue: pi.quantidadeEntregue,
         };
       });
-      const statusAprovado = (p.statusPedido || "").toLowerCase().startsWith("aprovad");
+      const statusAprovado = strLower(p.statusPedido).startsWith("aprovad");
       const todosEntregues = statusAprovado && itensDoPedido.every((pi) => {
         const pedida = Number(pi.quantidade || 0);
         const entregue = Number(pi.quantidadeEntregue || 0);
@@ -590,7 +597,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     })
     .filter(({ itensRestantes }) => itensRestantes.length > 0)
     .map(({ c, itensRestantes }) => {
-      const statusAprovado = (c.status || "").toLowerCase().startsWith("aprovad");
+      const statusAprovado = strLower(c.status).startsWith("aprovad");
       const itensComPreco = itensRestantes.map((it) => {
         const preco = itemCotacaoPreco.get(`${c.idCotacao}_${it.idProduto}`);
         return {
