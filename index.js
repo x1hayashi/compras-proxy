@@ -707,6 +707,7 @@ function atualizarPagamentos() {
           fornecedor: fichaMap.get(String(pg.idFicha)) || null,
           sacado: fichaMap.get(String(pg.idFichaSacado)) || null,
           valorAberto: parseValorBR(pg.valorAberto),
+          valorAbertoBruto: pg.valorAberto,
           tipoMovimento: movMap.get(String(pg.idTipoMovimento)) || null,
           observacao: pg.observacao || null,
           novoVencimento: pg.novoVencimento || pg.dataVencimento || null,
