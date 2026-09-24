@@ -139,7 +139,20 @@ function strLower(v) {
 // Converte valor monetário no formato brasileiro ("1.234,56") para número, sem quebrar com milhar
 function parseValorBR(v) {
   if (v == null) return 0;
-  const normalizado = String(v).trim().replace(/\./g, "").replace(",", ".");
+  const s = String(v).trim();
+  if (!s) return 0;
+  let normalizado;
+  if (s.includes(",")) {
+    // formato BR: ponto = milhar, vírgula = decimal (ex: "1.234,56")
+    normalizado = s.replace(/\./g, "").replace(",", ".");
+  } else if (s.includes(".")) {
+    // sem vírgula nenhuma: o GSB às vezes manda esse campo em formato americano
+    // (ex: "101790.52"), com o ponto já sendo o separador decimal — não remover
+    const partes = s.split(".");
+    normalizado = (partes.length === 2 && partes[1].length <= 2) ? s : s.replace(/\./g, "");
+  } else {
+    normalizado = s;
+  }
   const n = Number(normalizado);
   return isNaN(n) ? 0 : n;
 }
