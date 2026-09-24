@@ -697,6 +697,16 @@ function atualizarPagamentos() {
       gsbGetSeguro(gsbGetRange("cotacoes", dIni, dFim), "cotacoes"),
     ]);
 
+    // gsbGetSeguro nunca lança erro (devolve [] em falha) — mas um [] em "pagamentos" quase
+    // certamente é uma falha temporária de rede/timeout, não "zero pagamentos em 3 anos" de verdade.
+    // Se acontecer, mantém o cache anterior em vez de substituir por um resultado vazio.
+    if (!pagamentos || pagamentos.length === 0) {
+      throw new Error("busca de pagamentos veio vazia (provável falha temporária do GSB) — mantendo cache anterior");
+    }
+    if (!filiais || filiais.length === 0) {
+      throw new Error("busca de filiais veio vazia (provável falha temporária do GSB) — mantendo cache anterior");
+    }
+
     const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
     const fichaMap = new Map((fichas || []).map((f) => [String(f.idFicha), f.razao]));
     const movMap = new Map((tiposMovimento || []).map((m) => [String(m.idTipoMovimento), m.descricaoMovimento]));
