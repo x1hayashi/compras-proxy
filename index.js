@@ -661,9 +661,12 @@ function inicioFimSemanaAtual() {
   return { inicio: segunda, fim: domingo };
 }
 
-async function atualizarPagamentos() {
-  if (PAGAMENTOS_CACHE.atualizando) return;
+let PAGAMENTOS_PROMISE_ATUAL = null;
+
+function atualizarPagamentos() {
+  if (PAGAMENTOS_CACHE.atualizando) return PAGAMENTOS_PROMISE_ATUAL;
   PAGAMENTOS_CACHE.atualizando = true;
+  PAGAMENTOS_PROMISE_ATUAL = (async () => {
   try {
     const inicio = new Date();
     inicio.setDate(inicio.getDate() - 1095); // ~3 anos pra trás — cobre vencimento renegociado de título antigo
@@ -723,6 +726,8 @@ async function atualizarPagamentos() {
   } finally {
     PAGAMENTOS_CACHE.atualizando = false;
   }
+  })();
+  return PAGAMENTOS_PROMISE_ATUAL;
 }
 
 async function atualizarHistorico() {
@@ -883,7 +888,12 @@ http.createServer(async (req, res) => {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
       if (!user.admin && !user.acesso_financeiro) return json(res, 403, { error: "Sem acesso financeiro" });
-      if (Date.now() - new Date(PAGAMENTOS_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarPagamentos();
+      if (!PAGAMENTOS_CACHE.atualizadoEm) {
+        // primeira vez desde que o servidor subiu — espera terminar em vez de responder vazio
+        await atualizarPagamentos();
+      } else if (Date.now() - new Date(PAGAMENTOS_CACHE.atualizadoEm).getTime() > 30 * 60 * 1000) {
+        atualizarPagamentos(); // já tem algo em cache; atualiza em segundo plano sem travar a resposta
+      }
       return json(res, 200, PAGAMENTOS_CACHE.data);
     }
 
