@@ -897,13 +897,18 @@ http.createServer(async (req, res) => {
       const dataRef = (parsed.query.data || "").toString();
       try {
         let dIni, dFim;
+        let dataValida = null;
         if (dataRef) {
           // já sabemos a data exata do pedido (veio da tela de Pagamentos) — busca só perto dela,
           // bem mais rápido. Se a solicitação de origem for muito mais antiga, a própria busca
           // ampliada (órfão) do buscarHistorico já resolve isso sozinha.
-          const d = new Date(dataRef + "T00:00:00");
-          dIni = formatarDataGSB(somarDias(d, -90));
-          dFim = formatarDataGSB(somarDias(d, 15));
+          const dataParte = dataRef.split(" ")[0].split("T")[0]; // remove hora, se vier junto (ex: "2026-09-02 00:00:00")
+          const d = new Date(dataParte + "T00:00:00");
+          if (!isNaN(d.getTime())) dataValida = d;
+        }
+        if (dataValida) {
+          dIni = formatarDataGSB(somarDias(dataValida, -90));
+          dFim = formatarDataGSB(somarDias(dataValida, 15));
         } else {
           const fim = new Date();
           const inicio = new Date();
