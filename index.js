@@ -885,6 +885,55 @@ http.createServer(async (req, res) => {
     }
 
     // ── PAGAMENTOS EM ABERTO (semana atual) — só quem tem acesso financeiro ──
+    // ── DIAGNÓSTICO: por que a lista de pagamentos está vindo vazia ──
+    if (req.method === "GET" && p === "/admin/debug-pagamentos") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      try {
+        const inicio = new Date();
+        inicio.setDate(inicio.getDate() - 1095);
+        const fimBusca = new Date();
+        fimBusca.setDate(fimBusca.getDate() + 120);
+        const dIni = formatarDataGSB(inicio);
+        const dFim = formatarDataGSB(fimBusca);
+
+        const [pagamentos, filiais] = await Promise.all([
+          gsbGetSeguro(gsbGetRange("pagamentos", dIni, dFim), "pagamentos"),
+          gsbGetSeguro(gsbGet("filiais"), "filiais"),
+        ]);
+        const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+        const { inicio: segunda, fim: domingo } = inicioFimSemanaAtual();
+
+        const totalBruto = (pagamentos || []).length;
+        const comValorAberto = (pagamentos || []).filter((pg) => parseValorBR(pg.valorAberto) > 0);
+        const comVencimentoNaSemana = comValorAberto.filter((pg) => {
+          const venc = parseDataBR(pg.novoVencimento || pg.dataVencimento);
+          return venc && venc >= segunda && venc <= domingo;
+        });
+        const comFilialPermitida = comVencimentoNaSemana.filter((pg) =>
+          FILIAIS_PERMITIDAS.includes((filialMap.get(String(pg.idFilial)) || "").toUpperCase())
+        );
+
+        return json(res, 200, {
+          janelaBuscada: `${dIni} até ${dFim}`,
+          semanaAtual: `${formatarDataGSB(segunda)} até ${formatarDataGSB(domingo)}`,
+          cacheAtual: { atualizadoEm: PAGAMENTOS_CACHE.atualizadoEm, quantidadeNoCache: PAGAMENTOS_CACHE.data.length },
+          funil: {
+            totalPagamentosBrutos: totalBruto,
+            comValorAbertoMaiorQueZero: comValorAberto.length,
+            comVencimentoNaSemanaAtual: comVencimentoNaSemana.length,
+            comFilialHgoOuHba: comFilialPermitida.length,
+          },
+          amostraSemFiltro: (pagamentos || []).slice(0, 3).map((pg) => ({
+            idPagamento: pg.idPagamento, idFilial: pg.idFilial, valorAberto: pg.valorAberto,
+            novoVencimento: pg.novoVencimento, dataVencimento: pg.dataVencimento,
+          })),
+        });
+      } catch (e) {
+        return json(res, 500, { error: "Erro: " + e.message });
+      }
+    }
+
     if (req.method === "GET" && p === "/gsb/pagamentos-abertos") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
