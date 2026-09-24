@@ -163,8 +163,13 @@ function parseValorBR(v) {
 let CACHE = {
   produtos: [],       // [{idProduto, nome: "NOMEPRODUTO-VARIEDADE", unidade, idUnidade}]
   filiais: [],        // já filtradas para HGO/HBA
+  filiaisTodas: [],   // todas as filiais, sem filtro — usado pela tela de Pagamentos
   setores: [],
   unidades: [],       // [{idUnidade, nomeUnidade, siglaUnidade}] — cadastro de unidades do GSB
+  funcionarios: [],
+  fichas: [],
+  unidadesFaturamentos: [],
+  tiposMovimento: [],
   atualizadoEm: null,
   atualizando: false,
 };
@@ -173,13 +178,17 @@ async function atualizarCache() {
   if (CACHE.atualizando) return;
   CACHE.atualizando = true;
   try {
-    const [produtos, nomes, variedades, unidades, filiais, setores] = await Promise.all([
+    const [produtos, nomes, variedades, unidades, filiais, setores, funcionarios, fichas, unidadesFaturamentos, tiposMovimento] = await Promise.all([
       gsbGet("produtos"),
       gsbGet("produtosnomes"),
       gsbGet("produtosvariedades"),
       gsbGet("unidades"),
       gsbGet("filiais"),
       gsbGet("setores"),
+      gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
+      gsbGetSeguro(gsbGet("fichas"), "fichas"),
+      gsbGetSeguro(gsbGet("unidadesfaturamentos"), "unidadesfaturamentos"),
+      gsbGetSeguro(gsbGet("tiposmovimentos"), "tiposmovimentos"),
     ]);
 
     const nomeMap = new Map((nomes || []).map((n) => [String(n.idNomeProduto), n.nomeProduto]));
@@ -199,7 +208,12 @@ async function atualizarCache() {
     });
 
     CACHE.filiais = (filiais || []).filter((f) => FILIAIS_PERMITIDAS.includes((f.siglaFilial || "").toUpperCase()));
+    CACHE.filiaisTodas = filiais || [];
     CACHE.setores = setores || [];
+    CACHE.funcionarios = funcionarios || [];
+    CACHE.fichas = fichas || [];
+    CACHE.unidadesFaturamentos = unidadesFaturamentos || [];
+    CACHE.tiposMovimento = tiposMovimento || [];
     CACHE.unidades = (unidades || []).slice().sort((a, b) => (a.siglaUnidade || "").localeCompare(b.siglaUnidade || ""));
     CACHE.atualizadoEm = new Date().toISOString();
     console.log(`Cache atualizado: ${CACHE.produtos.length} produtos, ${CACHE.filiais.length} filiais, ${CACHE.setores.length} setores`);
@@ -228,22 +242,24 @@ async function buscarHistorico(dataInicio, dataFim) {
   const dataInicioPg = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
   const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
 
-  let [headers, itens, funcionarios, filiais, cotacoes, cotacoesListas, pedidos, pedidosItens, unidadesFaturamentos, fichas, cotacoesFornecedores, cotacoesProdutos, pagamentos, notasComprasItens] = await Promise.all([
+  let [headers, itens, cotacoes, cotacoesListas, pedidos, pedidosItens, cotacoesFornecedores, cotacoesProdutos, pagamentos, notasComprasItens] = await Promise.all([
     gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
     gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
-    gsbGetSeguro(gsbGet("funcionarios"), "funcionarios"),
-    gsbGetSeguro(gsbGet("filiais"), "filiais"),
     gsbGetSeguro(gsbGetRange("cotacoes", dataInicio, dataFim), "cotacoes"),
     gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicio, dataFim), "cotacoeslistas"),
     gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicio, dataFim), "pedidoscompras"),
     gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicio, dataFim), "pedidoscomprasitens"),
-    gsbGetSeguro(gsbGet("unidadesfaturamentos"), "unidadesfaturamentos"),
-    gsbGetSeguro(gsbGet("fichas"), "fichas"),
     gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
     gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
     gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
     gsbGetSeguro(gsbGetRange("notascomprasitens", dataInicioPg, dataFimPg), "notascomprasitens"),
   ]);
+  // listas sem filtro de data (cadastros) já vêm prontas do cache compartilhado, atualizado a cada 6h —
+  // evita rebuscar tudo isso do zero a cada detalhe/histórico consultado
+  const funcionarios = CACHE.funcionarios;
+  const filiais = CACHE.filiaisTodas;
+  const unidadesFaturamentos = CACHE.unidadesFaturamentos;
+  const fichas = CACHE.fichas;
 
   // Um pedido/cotação recente pode apontar pra uma solicitação bem mais antiga (prazo de entrega
   // longo, item que ficou meses cotando etc.) que não veio nessa janela de 90 dias. Só nesse caso
