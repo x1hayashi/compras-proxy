@@ -721,7 +721,7 @@ function atualizarPagamentos() {
         const venc = parseDataBR(pg.novoVencimento || pg.dataVencimento);
         return venc && venc >= segunda && venc <= domingo;
       })
-      .filter((pg) => FILIAIS_PERMITIDAS.includes((filialMap.get(String(pg.idFilial)) || "").toUpperCase()))
+      // Pagamentos mostra TODAS as filiais da empresa (diferente do resto do app, que só trata HGO/HBA)
       .map((pg) => {
         const pedido = pg.idPedidoCompra ? pedidoMap.get(String(pg.idPedidoCompra)) : null;
         return {
@@ -935,7 +935,8 @@ http.createServer(async (req, res) => {
           const venc = parseDataBR(pg.novoVencimento || pg.dataVencimento);
           return venc && venc >= segunda && venc <= domingo;
         });
-        const comFilialPermitida = comVencimentoNaSemana.filter((pg) =>
+        const comFilialPermitida = comVencimentoNaSemana; // Pagamentos não filtra mais por filial — mostra tudo
+        const soHgoHba = comVencimentoNaSemana.filter((pg) =>
           FILIAIS_PERMITIDAS.includes((filialMap.get(String(pg.idFilial)) || "").toUpperCase())
         );
 
@@ -959,7 +960,8 @@ http.createServer(async (req, res) => {
             totalPagamentosBrutos: totalBruto,
             comValorAbertoMaiorQueZero: comValorAberto.length,
             comVencimentoNaSemanaAtual: comVencimentoNaSemana.length,
-            comFilialHgoOuHba: comFilialPermitida.length,
+            totalTodasFiliais: comFilialPermitida.length,
+            dosQuaisSoHgoHba: soHgoHba.length,
           },
           amostraSemFiltro: (pagamentos || []).slice(0, 3).map((pg) => ({
             idPagamento: pg.idPagamento, idFilial: pg.idFilial, valorAberto: pg.valorAberto,
