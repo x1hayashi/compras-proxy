@@ -897,11 +897,13 @@ http.createServer(async (req, res) => {
         const dIni = formatarDataGSB(inicio);
         const dFim = formatarDataGSB(fimBusca);
 
-        const [pagamentos, filiais] = await Promise.all([
+        const [pagamentos, filiais, fichas] = await Promise.all([
           gsbGetSeguro(gsbGetRange("pagamentos", dIni, dFim), "pagamentos"),
           gsbGetSeguro(gsbGet("filiais"), "filiais"),
+          gsbGetSeguro(gsbGet("fichas"), "fichas"),
         ]);
         const filialMap = new Map((filiais || []).map((f) => [String(f.idFilial), f.siglaFilial]));
+        const fichaMap = new Map((fichas || []).map((f) => [String(f.idFicha), f.razao]));
         const { inicio: segunda, fim: domingo } = inicioFimSemanaAtual();
 
         const totalBruto = (pagamentos || []).length;
@@ -913,6 +915,18 @@ http.createServer(async (req, res) => {
         const comFilialPermitida = comVencimentoNaSemana.filter((pg) =>
           FILIAIS_PERMITIDAS.includes((filialMap.get(String(pg.idFilial)) || "").toUpperCase())
         );
+
+        const maioresValores = [...comFilialPermitida]
+          .sort((a, b) => parseValorBR(b.valorAberto) - parseValorBR(a.valorAberto))
+          .slice(0, 8)
+          .map((pg) => ({
+            idPagamento: pg.idPagamento,
+            fornecedor: fichaMap.get(String(pg.idFicha)) || null,
+            valorAbertoBruto: pg.valorAberto,
+            valorAbertoInterpretado: parseValorBR(pg.valorAberto),
+            valorBruto: pg.valor,
+            novoValorBruto: pg.novoValor,
+          }));
 
         return json(res, 200, {
           janelaBuscada: `${dIni} até ${dFim}`,
@@ -928,6 +942,7 @@ http.createServer(async (req, res) => {
             idPagamento: pg.idPagamento, idFilial: pg.idFilial, valorAberto: pg.valorAberto,
             novoVencimento: pg.novoVencimento, dataVencimento: pg.dataVencimento,
           })),
+          maioresValoresDaSemana: maioresValores,
         });
       } catch (e) {
         return json(res, 500, { error: "Erro: " + e.message });
