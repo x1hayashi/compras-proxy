@@ -175,6 +175,11 @@ let CACHE = {
   fichas: [],
   unidadesFaturamentos: [],
   tiposMovimento: [],
+  locaisEstoque: [],  // F_LOCAL_EST — destino "local de estoque" dos itens de pedido
+  imobilizados: [],   // F_EQUIP — destino "imobilizado/máquina" dos itens de pedido
+  anos: [],           // F_AREAS — destino "área agrícola" dos itens de pedido
+  subareas: [],       // F_AREAS — complementa "anos" pro nome da subárea
+  areas: [],          // F_AREAS — complementa "subareas" pro nome da área
   atualizadoEm: null,
   atualizando: false,
 };
@@ -183,7 +188,7 @@ async function atualizarCache() {
   if (CACHE.atualizando) return;
   CACHE.atualizando = true;
   try {
-    const [produtos, nomes, variedades, unidades, filiais, setores, funcionarios, fichas, unidadesFaturamentos, tiposMovimento] = await Promise.all([
+    const [produtos, nomes, variedades, unidades, filiais, setores, funcionarios, fichas, unidadesFaturamentos, tiposMovimento, locaisEstoque, imobilizados, anos, subareas, areas] = await Promise.all([
       gsbGet("produtos"),
       gsbGet("produtosnomes"),
       gsbGet("produtosvariedades"),
@@ -194,6 +199,11 @@ async function atualizarCache() {
       gsbGetSeguro(gsbGet("fichas"), "fichas"),
       gsbGetSeguro(gsbGet("unidadesfaturamentos"), "unidadesfaturamentos"),
       gsbGetSeguro(gsbGet("tiposmovimentos"), "tiposmovimentos"),
+      gsbGetSeguro(gsbGet("locaisestoques"), "locaisestoques"),
+      gsbGetSeguro(gsbGet("imobilizados"), "imobilizados"),
+      gsbGetSeguro(gsbGet("anos"), "anos"),
+      gsbGetSeguro(gsbGet("subareas"), "subareas"),
+      gsbGetSeguro(gsbGet("areas"), "areas"),
     ]);
 
     const nomeMap = new Map((nomes || []).map((n) => [String(n.idNomeProduto), n.nomeProduto]));
@@ -219,6 +229,11 @@ async function atualizarCache() {
     CACHE.fichas = fichas || [];
     CACHE.unidadesFaturamentos = unidadesFaturamentos || [];
     CACHE.tiposMovimento = tiposMovimento || [];
+    CACHE.locaisEstoque = locaisEstoque || [];
+    CACHE.imobilizados = imobilizados || [];
+    CACHE.anos = anos || [];
+    CACHE.subareas = subareas || [];
+    CACHE.areas = areas || [];
     CACHE.unidades = (unidades || []).slice().sort((a, b) => (a.siglaUnidade || "").localeCompare(b.siglaUnidade || ""));
     CACHE.atualizadoEm = new Date().toISOString();
     console.log(`Cache atualizado: ${CACHE.produtos.length} produtos, ${CACHE.filiais.length} filiais, ${CACHE.setores.length} setores`);
@@ -247,7 +262,7 @@ async function buscarHistorico(dataInicio, dataFim) {
   const dataInicioPg = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
   const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
 
-  let [headers, itens, cotacoes, cotacoesListas, pedidos, pedidosItens, cotacoesFornecedores, cotacoesProdutos, pagamentos, notasComprasItens] = await Promise.all([
+  let [headers, itens, cotacoes, cotacoesListas, pedidos, pedidosItens, cotacoesFornecedores, cotacoesProdutos, pagamentos, notasComprasItens, pedidosDestinacoes] = await Promise.all([
     gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
     gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
     gsbGetSeguro(gsbGetRange("cotacoes", dataInicio, dataFim), "cotacoes"),
@@ -258,6 +273,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
     gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
     gsbGetSeguro(gsbGetRange("notascomprasitens", dataInicioPg, dataFimPg), "notascomprasitens"),
+    gsbGetSeguro(gsbGetRange("pedidoscomprasdestinacoes", dataInicio, dataFim), "pedidoscomprasdestinacoes"),
   ]);
   // listas sem filtro de data (cadastros) já vêm prontas do cache compartilhado, atualizado a cada 6h —
   // evita rebuscar tudo isso do zero a cada detalhe/histórico consultado
@@ -278,7 +294,7 @@ async function buscarHistorico(dataInicio, dataFim) {
 
   if (temOrfao) {
     const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
-    [headers, itens, cotacoes, cotacoesListas, cotacoesFornecedores, cotacoesProdutos, pedidos, pedidosItens] = await Promise.all([
+    [headers, itens, cotacoes, cotacoesListas, cotacoesFornecedores, cotacoesProdutos, pedidos, pedidosItens, pedidosDestinacoes] = await Promise.all([
       gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras (busca ampliada)"),
       gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataFim), "solicitacoescomprasitens (busca ampliada)"),
       gsbGetSeguro(gsbGetRange("cotacoes", dataInicioAmpliada, dataFim), "cotacoes (busca ampliada)"),
@@ -287,6 +303,7 @@ async function buscarHistorico(dataInicio, dataFim) {
       gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicioAmpliada, dataFim), "cotacoesprodutos (busca ampliada)"),
       gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicioAmpliada, dataFim), "pedidoscompras (busca ampliada)"),
       gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicioAmpliada, dataFim), "pedidoscomprasitens (busca ampliada)"),
+      gsbGetSeguro(gsbGetRange("pedidoscomprasdestinacoes", dataInicioAmpliada, dataFim), "pedidoscomprasdestinacoes (busca ampliada)"),
     ]);
     console.log(`Vínculo órfão detectado — refeita a busca inteira de ${dataInicioAmpliada} até ${dataFim} (${(headers||[]).length} solicitações)`);
   }
@@ -302,6 +319,53 @@ async function buscarHistorico(dataInicio, dataFim) {
     responsavel: funcMap.get(String(c.idFuncionarioResponsavel)) || null,
   }]));
   const pedidoStatusMap = new Map((pedidos || []).map((p) => [String(p.idPedidoCompra), p.statusPedido]));
+
+  // ── Destino de cada item de pedido: local de estoque, imobilizado (máquina) ou área/ano agrícola ──
+  const locaisEstoqueMap = new Map(CACHE.locaisEstoque.map((l) => [String(l.idLocalEstoque), l.siglaLocal || l.local || null]));
+  const imobilizadosMap = new Map(CACHE.imobilizados.map((im) => [String(im.idImobilizado), im]));
+  const subareasMap = new Map(CACHE.subareas.map((sa) => [String(sa.idSubArea), sa]));
+  const areasMap = new Map(CACHE.areas.map((a) => [String(a.idArea), a.area || null]));
+  const anosMap = new Map(CACHE.anos.map((an) => [String(an.idAno), an]));
+
+  function textoDestino(dest) {
+    if (!dest) return null;
+    if (dest.idLocalEstoque) {
+      const sigla = locaisEstoqueMap.get(String(dest.idLocalEstoque));
+      return sigla ? `📦 ${sigla}` : `📦 Local ${dest.idLocalEstoque}`;
+    }
+    if (dest.idImobilizado) {
+      const im = imobilizadosMap.get(String(dest.idImobilizado));
+      if (!im) return `🚜 Imobilizado ${dest.idImobilizado}`;
+      const nome = [im.marca, im.modelo].filter(Boolean).join(" ");
+      return `🚜 ${im.numeroImobilizado ?? dest.idImobilizado}${nome ? " — " + nome : ""}`;
+    }
+    if (dest.idAno) {
+      const an = anosMap.get(String(dest.idAno));
+      const sa = an ? subareasMap.get(String(an.idSubArea)) : null;
+      const areaNome = sa ? areasMap.get(String(sa.idArea)) : null;
+      const partes = [areaNome, sa ? sa.subArea : null].filter(Boolean).join("-");
+      const anoTxt = an ? an.ano : null;
+      const label = [partes, anoTxt].filter(Boolean).join(" / ");
+      return `🌱 ${label || "Área " + dest.idAno}`;
+    }
+    return null;
+  }
+
+  // idPedidoCompraItem -> texto de destino (junta várias destinações do mesmo item, se houver)
+  const destinoPorItemPedido = new Map();
+  (pedidosDestinacoes || []).forEach((d) => {
+    const texto = textoDestino(d);
+    if (!texto) return;
+    const chave = String(d.idPedidoCompraItem);
+    const lista = destinoPorItemPedido.get(chave) || [];
+    lista.push(texto);
+    destinoPorItemPedido.set(chave, lista);
+  });
+  function destinoDoItemPedido(idPedidoCompraItem) {
+    if (!idPedidoCompraItem) return null;
+    const lista = destinoPorItemPedido.get(String(idPedidoCompraItem));
+    return lista && lista.length ? lista.join("; ") : null;
+  }
 
   // idUnidadeFaturamento -> idFicha (fornecedor)
   const unidadeFaturamentoParaFicha = new Map((unidadesFaturamentos || []).map((u) => [String(u.idUnidadeFaturamento), u.idFicha]));
@@ -409,6 +473,7 @@ async function buscarHistorico(dataInicio, dataFim) {
     if (!pi.idSolicitacaoCompraItem) return;
     itemParaPedido.set(String(pi.idSolicitacaoCompraItem), {
       idPedidoCompra: pi.idPedidoCompra,
+      idPedidoCompraItem: pi.idPedidoCompraItem,
       status: pedidoStatusMap.get(String(pi.idPedidoCompra)) || null,
       valorUnitario: pi.valorUnitario,
       valorTotal: pi.valorProduto,
@@ -448,6 +513,7 @@ async function buscarHistorico(dataInicio, dataFim) {
       valorTotal: ped ? ped.valorTotal : null,
       pedidoQuantidadePedida: ped ? ped.quantidadePedida : null,
       pedidoQuantidadeEntregue: ped ? ped.quantidadeEntregue : null,
+      destino: ped ? destinoDoItemPedido(ped.idPedidoCompraItem) : null,
     });
   });
 
@@ -551,6 +617,7 @@ async function buscarHistorico(dataInicio, dataFim) {
           valorUnitario: pi.valorUnitario,
           valorTotal: pi.valorProduto,
           quantidadeEntregue: pi.quantidadeEntregue,
+          destino: destinoDoItemPedido(pi.idPedidoCompraItem),
         };
       });
       const statusAprovado = strLower(p.statusPedido).startsWith("aprovad");
