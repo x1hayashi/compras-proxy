@@ -1214,6 +1214,72 @@ http.createServer(async (req, res) => {
       }
     }
 
+    if (req.method === "GET" && p === "/admin/debug-cotacao") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const numero = (parsed.query.numero || "").toString().trim();
+      if (!numero) return json(res, 400, { error: "Informe ?numero= (número da cotação)" });
+
+      const fim = new Date();
+      const inicio = new Date();
+      inicio.setDate(inicio.getDate() - 730);
+      const dIni = formatarDataGSB(inicio);
+      const dFim = formatarDataGSB(fim);
+
+      try {
+        const [cotacoes, cotacoesFornecedores, cotacoesProdutos, fichas] = await Promise.all([
+          gsbGetRange("cotacoes", dIni, dFim),
+          gsbGetRange("cotacoesfornecedores", dIni, dFim),
+          gsbGetRange("cotacoesprodutos", dIni, dFim),
+          gsbGet("fichas"),
+        ]);
+
+        const fichaNomeMap = new Map((fichas || []).map((f) => [String(f.idFicha), f.razao]));
+        const cotAchadas = (cotacoes || []).filter((c) => String(c.numeroCotacao) === numero);
+
+        const detalhe = cotAchadas.map((c) => {
+          const fornecedoresDaCot = (cotacoesFornecedores || []).filter((cf) => String(cf.idCotacao) === String(c.idCotacao));
+          const fornecedoresComItens = fornecedoresDaCot.map((cf) => {
+            const itensDoFornecedor = (cotacoesProdutos || []).filter((cp) => String(cp.idCotacaoFornecedor) === String(cf.idCotacaoFornecedor));
+            return {
+              idCotacaoFornecedor: cf.idCotacaoFornecedor,
+              idFicha: cf.idFicha,
+              fornecedor: fichaNomeMap.get(String(cf.idFicha)) || null,
+              observacao: cf.observacao || null,
+              // todas as chaves cruas de um item de exemplo, pra ver se o nome do campo bate com o esperado
+              chavesCrasDoItem: itensDoFornecedor[0] ? Object.keys(itensDoFornecedor[0]) : [],
+              itensRaw: itensDoFornecedor.map((cp) => ({
+                idProduto: cp.idProduto,
+                numeroItem: cp.numeroItem,
+                valorUnitario: cp.valorUnitario,
+                statusAprovado: cp.statusAprovado,
+                marcaObservacao: cp.marcaObservacao,
+                // variações de nome que o GSB poderia estar usando, pra comparar
+                MarcaObservacao: cp.MarcaObservacao,
+                marca_observacao: cp.marca_observacao,
+                marcaobservacao: cp.marcaobservacao,
+              })),
+            };
+          });
+          return {
+            idCotacao: c.idCotacao,
+            numeroCotacao: c.numeroCotacao,
+            dataCotacao: c.dataCotacao,
+            fornecedores: fornecedoresComItens,
+          };
+        });
+
+        return json(res, 200, {
+          numeroBuscado: numero,
+          janelaBuscada: `${dIni} até ${dFim}`,
+          encontrados: detalhe.length,
+          cotacoes: detalhe,
+        });
+      } catch (e) {
+        return json(res, 500, { error: "Erro ao investigar: " + e.message });
+      }
+    }
+
     if (req.method === "GET" && p === "/admin/usuarios") {
       const user = await getSession(req);
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
