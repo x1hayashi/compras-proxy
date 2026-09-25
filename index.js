@@ -117,6 +117,11 @@ function formatarDataGSB(d) {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   return `${dd}${mm}${d.getFullYear()}`;
 }
+function formatarDataISO(d) {
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
 function parseDataGSB(s) {
   // aceita "DDMMYYYY" (formato da API) ou "YYYY-MM-DD" (formato de <input type=date>)
   if (/^\d{8}$/.test(s)) {
@@ -690,6 +695,13 @@ function inicioFimSemanaAtual() {
   const domingo = new Date(segunda.getFullYear(), segunda.getMonth(), segunda.getDate() + 6, 23, 59, 59, 999);
   return { inicio: segunda, fim: domingo };
 }
+// Período padrão da tela de Pagamentos: hoje até 6 dias à frente (7 dias, incluindo hoje).
+function intervaloPadraoPagamentos() {
+  const hoje = new Date();
+  const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+  const fim = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate() + 6, 23, 59, 59, 999);
+  return { inicio, fim };
+}
 
 let PAGAMENTOS_PROMISE_ATUAL = null;
 
@@ -730,15 +742,13 @@ function atualizarPagamentos() {
     const pedidoMap = new Map((pedidos || []).map((pd) => [String(pd.idPedidoCompra), pd]));
     const cotacaoNumeroMap = new Map((cotacoes || []).map((c) => [String(c.idCotacao), c.numeroCotacao]));
 
-    const { inicio: segunda, fim: domingo } = inicioFimSemanaAtual();
-
+    // Cache guarda TODOS os pagamentos em aberto (sem filtrar por período) — o filtro de data é
+    // aplicado na hora da requisição, pra permitir trocar o intervalo visualizado sem refazer a
+    // busca no GSB. Pagamentos mostra TODAS as filiais da empresa (diferente do resto do app, que
+    // só trata HGO/HBA).
     PAGAMENTOS_CACHE.data = (pagamentos || [])
       .filter((pg) => parseValorBR(pg.valorAberto) > 0)
-      .filter((pg) => {
-        const venc = parseDataBR(pg.novoVencimento || pg.dataVencimento);
-        return venc && venc >= segunda && venc <= domingo;
-      })
-      // Pagamentos mostra TODAS as filiais da empresa (diferente do resto do app, que só trata HGO/HBA)
+      .filter((pg) => !!parseDataBR(pg.novoVencimento || pg.dataVencimento))
       .map((pg) => {
         const pedido = pg.idPedidoCompra ? pedidoMap.get(String(pg.idPedidoCompra)) : null;
         return {
@@ -761,7 +771,7 @@ function atualizarPagamentos() {
       .sort((a, b) => parseDataBR(a.novoVencimento) - parseDataBR(b.novoVencimento));
 
     PAGAMENTOS_CACHE.atualizadoEm = new Date().toISOString();
-    console.log(`Pagamentos em aberto atualizados: ${PAGAMENTOS_CACHE.data.length} (semana ${formatarDataGSB(segunda)} a ${formatarDataGSB(domingo)})`);
+    console.log(`Pagamentos em aberto atualizados: ${PAGAMENTOS_CACHE.data.length} no total (todos os vencimentos em aberto, filtro de período aplicado na consulta)`);
   } catch (e) {
     console.error("Erro ao atualizar pagamentos:", e.message);
   } finally {
@@ -1001,7 +1011,26 @@ http.createServer(async (req, res) => {
       } else if (Date.now() - new Date(PAGAMENTOS_CACHE.atualizadoEm).getTime() > 30 * 60 * 1000) {
         atualizarPagamentos(); // já tem algo em cache; atualiza em segundo plano sem travar a resposta
       }
-      return json(res, 200, PAGAMENTOS_CACHE.data);
+
+      const { inicio, fim } = parsed.query;
+      let dataInicio, dataFim;
+      if (inicio || fim) {
+        dataInicio = inicio ? new Date(inicio + "T00:00:00") : intervaloPadraoPagamentos().inicio;
+        dataFim = fim ? new Date(fim + "T23:59:59.999") : intervaloPadraoPagamentos().fim;
+      } else {
+        ({ inicio: dataInicio, fim: dataFim } = intervaloPadraoPagamentos());
+      }
+
+      const filtrados = PAGAMENTOS_CACHE.data.filter((pg) => {
+        const venc = parseDataBR(pg.novoVencimento);
+        return venc && venc >= dataInicio && venc <= dataFim;
+      });
+
+      return json(res, 200, {
+        periodoInicio: formatarDataISO(dataInicio),
+        periodoFim: formatarDataISO(dataFim),
+        dados: filtrados,
+      });
     }
 
     // ── DETALHE DE UM PEDIDO ESPECÍFICO (aberto a partir da tela de Pagamentos) ──
