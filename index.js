@@ -320,6 +320,7 @@ async function buscarHistorico(dataInicio, dataFim) {
       valorTotal: cp.valorProduto,
       aprovado,
       observacao: cf.observacao || null,
+      marcaObservacao: cp.marcaObservacao || null,
     };
     const lista = (itemCotacaoTodasPropostas.get(key) || []);
     lista.push(proposta);
