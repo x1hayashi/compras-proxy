@@ -255,6 +255,13 @@ setInterval(atualizarPagamentos, 30 * 60 * 1000);      // atualiza a cada 30 min
 
 // ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB) ──
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
+// A "busca ampliada" (órfão) refaz a busca inteira de ~15 meses em todas as tabelas — pesado em
+// memória. Alguns vínculos órfãos são permanentes (pedido antigo ainda em aberto, p.ex.) e disparariam
+// isso em TODA atualização (a cada 30 min), o que já causou estouro de heap no servidor. Por isso,
+// só permite repetir a busca ampliada no máximo 1x a cada 6h — nos ciclos intermediários, usa a
+// janela normal de 90 dias mesmo com órfão detectado (o item só fica "atrasado" por até 6h).
+let ULTIMA_BUSCA_AMPLIADA = 0;
+const INTERVALO_MIN_BUSCA_AMPLIADA = 6 * 60 * 60 * 1000;
 
 async function buscarHistorico(dataInicio, dataFim) {
   // pagamentos costuma ter data de documento bem diferente da data do pedido (parcelas, prazos etc.),
@@ -292,7 +299,12 @@ async function buscarHistorico(dataInicio, dataFim) {
     (pedidosItens || []).some((pi) => pi.idSolicitacaoCompraItem && !idsConhecidos.has(String(pi.idSolicitacaoCompraItem))) ||
     (cotacoesListas || []).some((cl) => cl.idSolicitacaoCompraItem && !idsConhecidos.has(String(cl.idSolicitacaoCompraItem)));
 
-  if (temOrfao) {
+  const podeAmpliarAgora = Date.now() - ULTIMA_BUSCA_AMPLIADA > INTERVALO_MIN_BUSCA_AMPLIADA;
+  if (temOrfao && !podeAmpliarAgora) {
+    console.log("Vínculo órfão detectado, mas busca ampliada foi pulada (rodou há menos de 6h) — evita sobrecarga de memória");
+  }
+  if (temOrfao && podeAmpliarAgora) {
+    ULTIMA_BUSCA_AMPLIADA = Date.now();
     const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
     [headers, itens, cotacoes, cotacoesListas, cotacoesFornecedores, cotacoesProdutos, pedidos, pedidosItens, pedidosDestinacoes] = await Promise.all([
       gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras (busca ampliada)"),
