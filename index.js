@@ -57,6 +57,46 @@ const sbInsert = (table, body)  => sbReq("POST", table, body);
 const sbPatch  = (table, body, query) => sbReq("PATCH", table, body, query);
 const sbDelete = (table, query) => sbReq("DELETE", table, null, query);
 
+// ── SUPABASE STORAGE (anexos das solicitações) ───────────────
+// Os arquivos NÃO passam pela memória do servidor: o navegador sobe direto pro Storage usando uma
+// URL assinada de upload que o backend gera, e baixa por URL assinada de leitura (curta duração).
+const BUCKET_ANEXOS = "compras-anexos";
+const ANEXO_MAX_BYTES = 10 * 1024 * 1024;
+const ANEXO_MAX_POR_ITEM = 5;
+
+function sbStorageReq(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const opts = {
+      hostname: SB_HOSTNAME,
+      path: `/storage/v1${path}`,
+      method,
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+    };
+    if (data) opts.headers["Content-Length"] = Buffer.byteLength(data);
+    const req = https.request(opts, (res) => {
+      let chunks = "";
+      res.on("data", (c) => (chunks += c));
+      res.on("end", () => {
+        if (res.statusCode >= 400) return reject(new Error(`Storage ${res.statusCode}: ${chunks}`));
+        try { resolve(chunks ? JSON.parse(chunks) : null); } catch { resolve(null); }
+      });
+    });
+    req.on("error", reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+function nomeSeguroArquivo(nome) {
+  const base = String(nome || "arquivo").normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return base.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80) || "arquivo";
+}
+async function removerArquivosStorage(caminhos) {
+  if (!caminhos || !caminhos.length) return;
+  try { await sbStorageReq("DELETE", `/object/${BUCKET_ANEXOS}`, { prefixes: caminhos }); }
+  catch (e) { console.error("Falha ao remover arquivos do Storage:", e.message); }
+}
+
 // ── AUTH / SESSÃO ─────────────────────────────────────────
 function sha256(s) { return crypto.createHash("sha256").update(s + "gsb2026").digest("hex"); }
 function limparWhats(w) { return (w || "").replace(/\D/g, ""); }
@@ -1161,6 +1201,11 @@ http.createServer(async (req, res) => {
       const ids = (cabecalhos || []).map((c) => c.id);
       let itens = [];
       if (ids.length) itens = await sbGet("solicitacoescompras_itens", `solicitacao_id=in.(${ids.join(",")})`);
+      let anexos = [];
+      if (ids.length) anexos = await sbGet("solicitacoescompras_anexos", `solicitacao_id=in.(${ids.join(",")})&select=id,item_id,nome,tipo,tamanho`);
+      const anexosPorItem = {};
+      (anexos || []).forEach((a) => (anexosPorItem[a.item_id] = anexosPorItem[a.item_id] || []).push(a));
+      (itens || []).forEach((it) => { it.anexos = anexosPorItem[it.id] || []; });
       const porSolic = {};
       (itens || []).forEach((it) => (porSolic[it.solicitacao_id] = porSolic[it.solicitacao_id] || []).push(it));
       const out = (cabecalhos || []).map((c) => ({ ...c, itens: porSolic[c.id] || [] }));
@@ -1196,9 +1241,78 @@ http.createServer(async (req, res) => {
         unidade: it.unidade || null,
         link_produto: it.linkProduto || null,
       }));
-      await sbInsert("solicitacoescompras_itens", itensPayload);
+      const itensCriados = await sbInsert("solicitacoescompras_itens", itensPayload);
 
-      return json(res, 200, { ok: true, id: solicitacaoId });
+      // ids dos itens na mesma ordem enviada — o app usa isso pra anexar os arquivos de cada item
+      return json(res, 200, { ok: true, id: solicitacaoId, itemIds: (itensCriados || []).map((r) => r.id) });
+    }
+
+    // ── ANEXOS: pede uma URL assinada pra subir o arquivo direto no Storage ──
+    if (req.method === "POST" && p === "/anexos/upload-url") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      const body = await readBody(req);
+      const itemId = Number(body.item_id);
+      const tamanho = Number(body.tamanho) || 0;
+      const nome = String(body.nome || "").trim();
+      if (!itemId || !nome) return json(res, 400, { error: "Informe item_id e nome" });
+      if (tamanho > ANEXO_MAX_BYTES) return json(res, 400, { error: "Arquivo acima de 10 MB" });
+
+      const itemRows = await sbGet("solicitacoescompras_itens", `id=eq.${itemId}&select=id,solicitacao_id`);
+      const item = itemRows && itemRows[0];
+      if (!item) return json(res, 404, { error: "Item não encontrado" });
+      const solicRows = await sbGet("solicitacoescompras", `id=eq.${item.solicitacao_id}&select=id,user_id`);
+      const solic = solicRows && solicRows[0];
+      if (!solic || (!user.admin && String(solic.user_id) !== String(user.id))) return json(res, 403, { error: "Sem permissão" });
+
+      const jaTem = await sbGet("solicitacoescompras_anexos", `item_id=eq.${itemId}&select=id`);
+      if ((jaTem || []).length >= ANEXO_MAX_POR_ITEM) return json(res, 400, { error: `Máximo de ${ANEXO_MAX_POR_ITEM} arquivos por item` });
+
+      const caminho = `${item.solicitacao_id}/${itemId}/${crypto.randomBytes(6).toString("hex")}-${nomeSeguroArquivo(nome)}`;
+      const assinado = await sbStorageReq("POST", `/object/upload/sign/${BUCKET_ANEXOS}/${caminho}`, {});
+      if (!assinado || !assinado.url) return json(res, 500, { error: "Não foi possível gerar a URL de upload" });
+
+      const criado = await sbInsert("solicitacoescompras_anexos", {
+        solicitacao_id: item.solicitacao_id,
+        item_id: itemId,
+        nome,
+        tipo: body.tipo || null,
+        tamanho: tamanho || null,
+        caminho,
+        user_id: user.id,
+      });
+      return json(res, 200, { id: criado[0].id, uploadUrl: `https://${SB_HOSTNAME}/storage/v1${assinado.url}` });
+    }
+
+    // ── ANEXOS: se o upload falhar no navegador, desfaz o registro ──
+    if (req.method === "DELETE" && p.startsWith("/anexos/")) {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      const id = p.split("/")[2];
+      const rows = await sbGet("solicitacoescompras_anexos", `id=eq.${Number(id)}&select=id,caminho,user_id`);
+      const a = rows && rows[0];
+      if (!a) return json(res, 200, { ok: true });
+      if (!user.admin && String(a.user_id) !== String(user.id)) return json(res, 403, { error: "Sem permissão" });
+      await removerArquivosStorage([a.caminho]);
+      await sbDelete("solicitacoescompras_anexos", `id=eq.${a.id}`);
+      return json(res, 200, { ok: true });
+    }
+
+    // ── ANEXOS: URL temporária pra abrir/baixar o arquivo ──
+    if (req.method === "GET" && p.startsWith("/anexos/") && p.endsWith("/url")) {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      const id = Number(p.split("/")[2]);
+      const rows = await sbGet("solicitacoescompras_anexos", `id=eq.${id}&select=id,nome,caminho,solicitacao_id`);
+      const a = rows && rows[0];
+      if (!a) return json(res, 404, { error: "Anexo não encontrado" });
+      if (!user.admin) {
+        const s = await sbGet("solicitacoescompras", `id=eq.${a.solicitacao_id}&select=user_id`);
+        if (!s || !s[0] || String(s[0].user_id) !== String(user.id)) return json(res, 403, { error: "Sem permissão" });
+      }
+      const assinado = await sbStorageReq("POST", `/object/sign/${BUCKET_ANEXOS}/${a.caminho}`, { expiresIn: 300 });
+      if (!assinado || !assinado.signedURL) return json(res, 500, { error: "Não foi possível gerar o link do arquivo" });
+      return json(res, 200, { url: `https://${SB_HOSTNAME}/storage/v1${assinado.signedURL}`, nome: a.nome });
     }
 
     if (req.method === "PUT" && p.startsWith("/solicitacoes/")) {
@@ -1220,6 +1334,12 @@ http.createServer(async (req, res) => {
       if (!user) return json(res, 401, { error: "Não autenticado" });
       const id = p.split("/")[2];
       const filtro = user.admin ? `id=eq.${id}` : `id=eq.${id}&user_id=eq.${user.id}&status=eq.pendente`;
+      // apaga também os arquivos do Storage (o banco remove os registros em cascata)
+      const alvo = await sbGet("solicitacoescompras", `${filtro}&select=id`);
+      if (alvo && alvo[0]) {
+        const anexos = await sbGet("solicitacoescompras_anexos", `solicitacao_id=eq.${alvo[0].id}&select=caminho`);
+        await removerArquivosStorage((anexos || []).map((a) => a.caminho));
+      }
       await sbDelete("solicitacoescompras", filtro);
       return json(res, 200, { ok: true });
     }
