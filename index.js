@@ -21,6 +21,42 @@ const SB_HOSTNAME = SB_URL_RAW ? SB_URL_RAW.replace(/^https?:\/\//, "").split("/
 
 const FILIAIS_PERMITIDAS = ["HGO", "HBA"];
 
+// ── DATA WAREHOUSE (projeto Supabase "gsb-dw", carregado automaticamente do GSB) ──
+// Quando DW_SUPABASE_URL e DW_SUPABASE_KEY (service_role do gsb-dw) estão definidas, as telas
+// leem de lá (consulta SQL rápida). Sem elas, o app continua usando a API do GSB como antes.
+const DW_URL_RAW = process.env.DW_SUPABASE_URL;
+const DW_KEY = process.env.DW_SUPABASE_KEY;
+const DW_HOSTNAME = DW_URL_RAW ? DW_URL_RAW.replace(/^https?:\/\//, "").split("/")[0] : "";
+const DW_ATIVO = !!(DW_HOSTNAME && DW_KEY);
+function dwRpc(fn, args) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(args || {});
+    const req = https.request({
+      hostname: DW_HOSTNAME,
+      path: `/rest/v1/rpc/${fn}`,
+      method: "POST",
+      timeout: 20000,
+      headers: {
+        apikey: DW_KEY,
+        Authorization: `Bearer ${DW_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(data),
+      },
+    }, (res) => {
+      let chunks = "";
+      res.on("data", (c) => (chunks += c));
+      res.on("end", () => {
+        if (res.statusCode >= 400) return reject(new Error(`DW ${res.statusCode}: ${chunks.slice(0, 300)}`));
+        try { resolve(chunks ? JSON.parse(chunks) : null); } catch (e) { reject(e); }
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("DW timeout")));
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
 // ── SUPABASE REST HELPER ─────────────────────────────────────
 function sbReq(method, table, body, query) {
   return new Promise((resolve, reject) => {
@@ -287,11 +323,11 @@ async function atualizarCache() {
 (async () => {
   await atualizarCache();       // produtos/filiais/setores primeiro
   await atualizarHistorico();   // depois o histórico, já usando os produtos em cache
-  await atualizarPagamentos();
+  if (!DW_ATIVO) await atualizarPagamentos(); // com o DW ativo, Pagamentos lê direto do banco
 })();
 setInterval(atualizarCache, 6 * 60 * 60 * 1000);       // atualiza a cada 6 horas
 setInterval(atualizarHistorico, 30 * 60 * 1000);       // atualiza a cada 30 min
-setInterval(atualizarPagamentos, 30 * 60 * 1000);      // atualiza a cada 30 min
+if (!DW_ATIVO) setInterval(atualizarPagamentos, 30 * 60 * 1000); // atualiza a cada 30 min (só sem DW)
 
 // ── HISTÓRICO DE SOLICITAÇÕES (direto do GSB) ──
 let HIST_CACHE = { data: [], atualizadoEm: null, atualizando: false };
@@ -1124,13 +1160,6 @@ http.createServer(async (req, res) => {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
       if (!user.admin && !user.acesso_financeiro) return json(res, 403, { error: "Sem acesso financeiro" });
-      if (!PAGAMENTOS_CACHE.atualizadoEm) {
-        // primeira vez desde que o servidor subiu — espera terminar em vez de responder vazio
-        await atualizarPagamentos();
-      } else if (Date.now() - new Date(PAGAMENTOS_CACHE.atualizadoEm).getTime() > 30 * 60 * 1000) {
-        atualizarPagamentos(); // já tem algo em cache; atualiza em segundo plano sem travar a resposta
-      }
-
       const { inicio, fim } = parsed.query;
       let dataInicio, dataFim;
       if (inicio || fim) {
@@ -1138,6 +1167,31 @@ http.createServer(async (req, res) => {
         dataFim = fim ? new Date(fim + "T23:59:59.999") : intervaloPadraoPagamentos().fim;
       } else {
         ({ inicio: dataInicio, fim: dataFim } = intervaloPadraoPagamentos());
+      }
+
+      // Caminho rápido: lê direto do data warehouse (já carregado do GSB de hora em hora).
+      if (DW_ATIVO) {
+        try {
+          const linhas = await dwRpc("app_pagamentos_abertos", {
+            p_inicio: formatarDataISO(dataInicio),
+            p_fim: formatarDataISO(dataFim),
+          });
+          return json(res, 200, {
+            periodoInicio: formatarDataISO(dataInicio),
+            periodoFim: formatarDataISO(dataFim),
+            fonte: "dw",
+            dados: (linhas || []).map(({ _venc, ...resto }) => resto),
+          });
+        } catch (e) {
+          console.error("DW indisponível em pagamentos, usando API do GSB:", e.message);
+        }
+      }
+
+      if (!PAGAMENTOS_CACHE.atualizadoEm) {
+        // primeira vez desde que o servidor subiu — espera terminar em vez de responder vazio
+        await atualizarPagamentos();
+      } else if (Date.now() - new Date(PAGAMENTOS_CACHE.atualizadoEm).getTime() > 30 * 60 * 1000) {
+        atualizarPagamentos(); // já tem algo em cache; atualiza em segundo plano sem travar a resposta
       }
 
       const filtrados = PAGAMENTOS_CACHE.data.filter((pg) => {
