@@ -151,7 +151,7 @@ const BUCKET_ANEXOS = "compras-anexos";
 const ANEXO_MAX_BYTES = 50 * 1024 * 1024;   // fotos, PDFs, áudios e vídeos curtos
 const ANEXO_MAX_POR_ITEM = 5;
 const ANEXO_MAX_POR_SOLICITACAO = 8;   // áudio/foto/vídeo anexados à solicitação como um todo
-const DESTINO_TIPOS = ["imobilizado", "subarea", "local"];
+const DESTINO_TIPOS = ["imobilizado", "subarea", "local", "texto"];   // "texto" = destino digitado livremente
 
 function sbStorageReq(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -1377,8 +1377,8 @@ http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.itens || !body.itens.length) return json(res, 400, { error: "Inclua ao menos um item" });
       if (!body.data_necessidade) return json(res, 400, { error: "Escolha a data que precisa dos itens" });
-      if (!DESTINO_TIPOS.includes(body.destino_tipo) || !body.destino_id || !String(body.destino_nome || "").trim()) {
-        return json(res, 400, { error: "Informe o destino (ativo, área ou local de estoque)" });
+      if (!DESTINO_TIPOS.includes(body.destino_tipo) || !String(body.destino_nome || "").trim() || (body.destino_tipo !== "texto" && !body.destino_id)) {
+        return json(res, 400, { error: "Informe o destino (ativo, área, local de estoque ou texto livre)" });
       }
 
       const cab = await sbInsert("solicitacoescompras", {
@@ -1390,7 +1390,7 @@ http.createServer(async (req, res) => {
         obs: body.obs || null,
         data_necessidade: body.data_necessidade,
         destino_tipo: body.destino_tipo,
-        destino_id: String(body.destino_id),
+        destino_id: body.destino_id ? String(body.destino_id) : null,
         destino_nome: String(body.destino_nome).trim().slice(0, 200),
         user_id: user.id,
         solicitante_nome: user.nome,
