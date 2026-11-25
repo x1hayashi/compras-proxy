@@ -148,8 +148,10 @@ const sbDelete = (table, query) => sbReq("DELETE", table, null, query);
 // Os arquivos NÃO passam pela memória do servidor: o navegador sobe direto pro Storage usando uma
 // URL assinada de upload que o backend gera, e baixa por URL assinada de leitura (curta duração).
 const BUCKET_ANEXOS = "compras-anexos";
-const ANEXO_MAX_BYTES = 10 * 1024 * 1024;
+const ANEXO_MAX_BYTES = 50 * 1024 * 1024;   // fotos, PDFs, áudios e vídeos curtos
 const ANEXO_MAX_POR_ITEM = 5;
+const ANEXO_MAX_POR_SOLICITACAO = 8;   // áudio/foto/vídeo anexados à solicitação como um todo
+const DESTINO_TIPOS = ["imobilizado", "subarea", "local"];
 
 function sbStorageReq(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -1103,6 +1105,46 @@ http.createServer(async (req, res) => {
       const resultados = CACHE.produtos.filter((p2) => p2.nome.toLowerCase().includes(q)).slice(0, 30);
       return json(res, 200, resultados);
     }
+    // ── DESTINO da solicitação: ativo (imobilizado), subárea ou local de estoque ──
+    if (req.method === "GET" && p === "/gsb/destinos-busca") {
+      const user = await getSession(req);
+      if (!user) return json(res, 401, { error: "Não autenticado" });
+      const q = tokensNomeSrv(parsed.query.q || "");
+      if (!q.length) return json(res, 200, []);
+      const idFilial = String(parsed.query.idFilial || "");
+      const tipo = String(parsed.query.tipo || "");
+      const casa = (...textos) => { const t = tokensNomeSrv(textos.filter(Boolean).join(" ")).join(" "); return q.every((w) => t.includes(w)); };
+      const out = [];
+      if (!tipo || tipo === "imobilizado") {
+        (CACHE.imobilizados || [])
+          .filter((im) => String(im.status || "").toLowerCase() !== "inativado")
+          .filter((im) => casa(im.numeroImobilizado, im.marca, im.modelo, im.placa))
+          .sort((a, b) => (String(b.idFilial) === idFilial) - (String(a.idFilial) === idFilial)
+            || String(a.numeroImobilizado).localeCompare(String(b.numeroImobilizado), "pt-BR", { numeric: true }))
+          .slice(0, 20)
+          .forEach((im) => out.push({
+            tipo: "imobilizado", id: String(im.idImobilizado),
+            nome: `${im.numeroImobilizado ?? im.idImobilizado}${[im.marca, im.modelo].filter(Boolean).length ? " — " + [im.marca, im.modelo].filter(Boolean).join(" ") : ""}`,
+          }));
+      }
+      if (!tipo || tipo === "subarea") {
+        const areasMap = new Map((CACHE.areas || []).map((a) => [String(a.idArea), a]));
+        (CACHE.subareas || [])
+          .map((sa) => ({ sa, area: areasMap.get(String(sa.idArea)) }))
+          .filter(({ area }) => area && String(area.status || "").toLowerCase() !== "desativada" && (!idFilial || String(area.idFilial) === idFilial))
+          .filter(({ sa, area }) => casa(area.area, sa.subArea))
+          .slice(0, 20)
+          .forEach(({ sa, area }) => out.push({ tipo: "subarea", id: String(sa.idSubArea), nome: [area.area, sa.subArea].filter(Boolean).join("-") }));
+      }
+      if (!tipo || tipo === "local") {
+        (CACHE.locaisEstoque || [])
+          .filter((l) => !idFilial || String(l.idFilial) === idFilial)
+          .filter((l) => casa(l.siglaLocal, l.local))
+          .slice(0, 20)
+          .forEach((l) => out.push({ tipo: "local", id: String(l.idLocalEstoque), nome: [l.siglaLocal, l.local].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ") }));
+      }
+      return json(res, 200, out.slice(0, 40));
+    }
     if (req.method === "POST" && p === "/gsb/atualizar-cache") {
       const user = await getSession(req);
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
@@ -1315,13 +1357,17 @@ http.createServer(async (req, res) => {
       let itens = [];
       if (ids.length) itens = await sbGet("solicitacoescompras_itens", `solicitacao_id=in.(${ids.join(",")})`);
       let anexos = [];
-      if (ids.length) anexos = await sbGet("solicitacoescompras_anexos", `solicitacao_id=in.(${ids.join(",")})&select=id,item_id,nome,tipo,tamanho`);
+      if (ids.length) anexos = await sbGet("solicitacoescompras_anexos", `solicitacao_id=in.(${ids.join(",")})&select=id,solicitacao_id,item_id,nome,tipo,tamanho,transcricao`);
       const anexosPorItem = {};
-      (anexos || []).forEach((a) => (anexosPorItem[a.item_id] = anexosPorItem[a.item_id] || []).push(a));
+      const anexosDaSolicitacao = {};
+      (anexos || []).forEach((a) => {
+        if (a.item_id) (anexosPorItem[a.item_id] = anexosPorItem[a.item_id] || []).push(a);
+        else (anexosDaSolicitacao[a.solicitacao_id] = anexosDaSolicitacao[a.solicitacao_id] || []).push(a);
+      });
       (itens || []).forEach((it) => { it.anexos = anexosPorItem[it.id] || []; });
       const porSolic = {};
       (itens || []).forEach((it) => (porSolic[it.solicitacao_id] = porSolic[it.solicitacao_id] || []).push(it));
-      const out = (cabecalhos || []).map((c) => ({ ...c, itens: porSolic[c.id] || [] }));
+      const out = (cabecalhos || []).map((c) => ({ ...c, itens: porSolic[c.id] || [], anexos: anexosDaSolicitacao[c.id] || [] }));
       return json(res, 200, out);
     }
 
@@ -1331,6 +1377,9 @@ http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.itens || !body.itens.length) return json(res, 400, { error: "Inclua ao menos um item" });
       if (!body.data_necessidade) return json(res, 400, { error: "Escolha a data que precisa dos itens" });
+      if (!DESTINO_TIPOS.includes(body.destino_tipo) || !body.destino_id || !String(body.destino_nome || "").trim()) {
+        return json(res, 400, { error: "Informe o destino (ativo, área ou local de estoque)" });
+      }
 
       const cab = await sbInsert("solicitacoescompras", {
         id_filial: body.id_filial || null,
@@ -1340,6 +1389,9 @@ http.createServer(async (req, res) => {
         setor_nome: body.setor_nome || null,
         obs: body.obs || null,
         data_necessidade: body.data_necessidade,
+        destino_tipo: body.destino_tipo,
+        destino_id: String(body.destino_id),
+        destino_nome: String(body.destino_nome).trim().slice(0, 200),
         user_id: user.id,
         solicitante_nome: user.nome,
         status: "pendente",
@@ -1365,33 +1417,43 @@ http.createServer(async (req, res) => {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
       const body = await readBody(req);
-      const itemId = Number(body.item_id);
+      const itemId = Number(body.item_id) || null;
+      let solicitacaoId = Number(body.solicitacao_id) || null;
       const tamanho = Number(body.tamanho) || 0;
       const nome = String(body.nome || "").trim();
-      if (!itemId || !nome) return json(res, 400, { error: "Informe item_id e nome" });
-      if (tamanho > ANEXO_MAX_BYTES) return json(res, 400, { error: "Arquivo acima de 10 MB" });
+      if ((!itemId && !solicitacaoId) || !nome) return json(res, 400, { error: "Informe item_id (ou solicitacao_id) e nome" });
+      if (tamanho > ANEXO_MAX_BYTES) return json(res, 400, { error: "Arquivo acima de 50 MB" });
 
-      const itemRows = await sbGet("solicitacoescompras_itens", `id=eq.${itemId}&select=id,solicitacao_id`);
-      const item = itemRows && itemRows[0];
-      if (!item) return json(res, 404, { error: "Item não encontrado" });
-      const solicRows = await sbGet("solicitacoescompras", `id=eq.${item.solicitacao_id}&select=id,user_id`);
+      if (itemId) {
+        const itemRows = await sbGet("solicitacoescompras_itens", `id=eq.${itemId}&select=id,solicitacao_id`);
+        const item = itemRows && itemRows[0];
+        if (!item) return json(res, 404, { error: "Item não encontrado" });
+        solicitacaoId = item.solicitacao_id;
+      }
+      const solicRows = await sbGet("solicitacoescompras", `id=eq.${solicitacaoId}&select=id,user_id`);
       const solic = solicRows && solicRows[0];
       if (!solic || (!user.admin && String(solic.user_id) !== String(user.id))) return json(res, 403, { error: "Sem permissão" });
 
-      const jaTem = await sbGet("solicitacoescompras_anexos", `item_id=eq.${itemId}&select=id`);
-      if ((jaTem || []).length >= ANEXO_MAX_POR_ITEM) return json(res, 400, { error: `Máximo de ${ANEXO_MAX_POR_ITEM} arquivos por item` });
+      if (itemId) {
+        const jaTem = await sbGet("solicitacoescompras_anexos", `item_id=eq.${itemId}&select=id`);
+        if ((jaTem || []).length >= ANEXO_MAX_POR_ITEM) return json(res, 400, { error: `Máximo de ${ANEXO_MAX_POR_ITEM} arquivos por item` });
+      } else {
+        const jaTem = await sbGet("solicitacoescompras_anexos", `solicitacao_id=eq.${solicitacaoId}&item_id=is.null&select=id`);
+        if ((jaTem || []).length >= ANEXO_MAX_POR_SOLICITACAO) return json(res, 400, { error: `Máximo de ${ANEXO_MAX_POR_SOLICITACAO} arquivos na solicitação` });
+      }
 
-      const caminho = `${item.solicitacao_id}/${itemId}/${crypto.randomBytes(6).toString("hex")}-${nomeSeguroArquivo(nome)}`;
+      const caminho = `${solicitacaoId}/${itemId || "geral"}/${crypto.randomBytes(6).toString("hex")}-${nomeSeguroArquivo(nome)}`;
       const assinado = await sbStorageReq("POST", `/object/upload/sign/${BUCKET_ANEXOS}/${caminho}`, {});
       if (!assinado || !assinado.url) return json(res, 500, { error: "Não foi possível gerar a URL de upload" });
 
       const criado = await sbInsert("solicitacoescompras_anexos", {
-        solicitacao_id: item.solicitacao_id,
+        solicitacao_id: solicitacaoId,
         item_id: itemId,
         nome,
         tipo: body.tipo || null,
         tamanho: tamanho || null,
         caminho,
+        transcricao: body.transcricao ? String(body.transcricao).slice(0, 5000) : null,
         user_id: user.id,
       });
       return json(res, 200, { id: criado[0].id, uploadUrl: `https://${SB_HOSTNAME}/storage/v1${assinado.url}` });
