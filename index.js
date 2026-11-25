@@ -21,6 +21,57 @@ const SB_HOSTNAME = SB_URL_RAW ? SB_URL_RAW.replace(/^https?:\/\//, "").split("/
 
 const FILIAIS_PERMITIDAS = ["HGO", "HBA"];
 
+// Lê uma tabela de compras do DW já no formato da API do GSB (mesmas chaves, tudo texto).
+// Datas chegam no formato DDMMYYYY do GSB. Se o DW falhar, cai para a API do GSB.
+// (dIniDw/dFimDw: janela usada só no DW — pagamentos/notas lá já vêm ligados aos pedidos da janela.)
+async function lerTabela(nome, dIni, dFim, dIniDw, dFimDw) {
+  if (DW_ATIVO) {
+    try {
+      const ini = formatarDataISO(parseDataGSB(dIniDw || dIni));
+      const fim = formatarDataISO(parseDataGSB(dFimDw || dFim));
+      const linhas = await dwRpc("app_gsb_tabela", { p_tabela: nome, p_ini: ini, p_fim: fim });
+      if (Array.isArray(linhas)) return linhas;
+    } catch (e) {
+      console.error(`DW indisponível para ${nome}, usando API do GSB:`, e.message);
+    }
+  }
+  return gsbGetRange(nome, dIni, dFim);
+}
+
+// ── "MINHAS": casa o usuário logado com as pessoas do GSB pelo nome ──────────
+// (sem acento, caixa alta; "Ricardo Borges" bate com "RICARDO GOMES BORGES")
+function tokensNomeSrv(n) {
+  return String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase().split(/\s+/).filter(Boolean);
+}
+function ehSubsequenciaSrv(curtos, longos) {
+  let i = 0;
+  for (const t of longos) { if (i < curtos.length && curtos[i] === t) i++; }
+  return i === curtos.length;
+}
+function mesmaPessoaSrv(a, b) {
+  const ta = tokensNomeSrv(a), tb = tokensNomeSrv(b);
+  if (!ta.length || !tb.length) return false;
+  if (ta.length === 1 || tb.length === 1) return ta.join(" ") === tb.join(" ");
+  return ehSubsequenciaSrv(ta, tb) || ehSubsequenciaSrv(tb, ta);
+}
+// Se o admin vinculou o usuário a um funcionário do GSB, usa o nome oficial dele (comparação exata);
+// senão, compara pelo nome cadastrado no app (aproximado).
+function solicitacaoEhDoUsuario(s, user) {
+  const vinculado = user.id_funcionario_gsb
+    ? (CACHE.funcionarios || []).find((f) => String(f.idFuncionario) === String(user.id_funcionario_gsb))
+    : null;
+  const pessoas = [s.solicitante, s.cotador, s.responsavelCotacao, s.compradorPedido, s.responsavelPedido];
+  if (vinculado && vinculado.nome) {
+    const alvo = tokensNomeSrv(vinculado.nome).join(" ");
+    return pessoas.some((n) => tokensNomeSrv(n).join(" ") === alvo);
+  }
+  return pessoas.some((n) => mesmaPessoaSrv(n, user.nome));
+}
+// Admin vê tudo se pedir (meus=0); os demais SEMPRE só veem o que é deles.
+function escopoSomenteMeus(user, query) {
+  return !user.admin || String(query.meus) === "1";
+}
+
 // ── DATA WAREHOUSE (projeto Supabase "gsb-dw", carregado automaticamente do GSB) ──
 // Quando DW_SUPABASE_URL e DW_SUPABASE_KEY (service_role do gsb-dw) estão definidas, as telas
 // leem de lá (consulta SQL rápida). Sem elas, o app continua usando a API do GSB como antes.
@@ -346,17 +397,17 @@ async function buscarHistorico(dataInicio, dataFim) {
   const dataFimPg = formatarDataGSB(somarDias(parseDataGSB(dataFim), 60));
 
   let [headers, itens, cotacoes, cotacoesListas, pedidos, pedidosItens, cotacoesFornecedores, cotacoesProdutos, pagamentos, notasComprasItens, pedidosDestinacoes] = await Promise.all([
-    gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
-    gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
-    gsbGetSeguro(gsbGetRange("cotacoes", dataInicio, dataFim), "cotacoes"),
-    gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicio, dataFim), "cotacoeslistas"),
-    gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicio, dataFim), "pedidoscompras"),
-    gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicio, dataFim), "pedidoscomprasitens"),
-    gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
-    gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
-    gsbGetSeguro(gsbGetRange("pagamentos", dataInicioPg, dataFimPg), "pagamentos"),
-    gsbGetSeguro(gsbGetRange("notascomprasitens", dataInicioPg, dataFimPg), "notascomprasitens"),
-    gsbGetSeguro(gsbGetRange("pedidoscomprasdestinacoes", dataInicio, dataFim), "pedidoscomprasdestinacoes"),
+    gsbGetSeguro(lerTabela("solicitacoescompras", dataInicio, dataFim), "solicitacoescompras"),
+    gsbGetSeguro(lerTabela("solicitacoescomprasitens", dataInicio, dataFim), "solicitacoescomprasitens"),
+    gsbGetSeguro(lerTabela("cotacoes", dataInicio, dataFim), "cotacoes"),
+    gsbGetSeguro(lerTabela("cotacoeslistas", dataInicio, dataFim), "cotacoeslistas"),
+    gsbGetSeguro(lerTabela("pedidoscompras", dataInicio, dataFim), "pedidoscompras"),
+    gsbGetSeguro(lerTabela("pedidoscomprasitens", dataInicio, dataFim), "pedidoscomprasitens"),
+    gsbGetSeguro(lerTabela("cotacoesfornecedores", dataInicio, dataFim), "cotacoesfornecedores"),
+    gsbGetSeguro(lerTabela("cotacoesprodutos", dataInicio, dataFim), "cotacoesprodutos"),
+    gsbGetSeguro(lerTabela("pagamentos", dataInicioPg, dataFimPg, dataInicio, dataFim), "pagamentos"),
+    gsbGetSeguro(lerTabela("notascomprasitens", dataInicioPg, dataFimPg, dataInicio, dataFim), "notascomprasitens"),
+    gsbGetSeguro(lerTabela("pedidoscomprasdestinacoes", dataInicio, dataFim), "pedidoscomprasdestinacoes"),
   ]);
   // listas sem filtro de data (cadastros) já vêm prontas do cache compartilhado, atualizado a cada 6h —
   // evita rebuscar tudo isso do zero a cada detalhe/histórico consultado
@@ -383,15 +434,15 @@ async function buscarHistorico(dataInicio, dataFim) {
     ULTIMA_BUSCA_AMPLIADA = Date.now();
     const dataInicioAmpliada = formatarDataGSB(somarDias(parseDataGSB(dataInicio), -365));
     [headers, itens, cotacoes, cotacoesListas, cotacoesFornecedores, cotacoesProdutos, pedidos, pedidosItens, pedidosDestinacoes] = await Promise.all([
-      gsbGetSeguro(gsbGetRange("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("solicitacoescomprasitens", dataInicioAmpliada, dataFim), "solicitacoescomprasitens (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("cotacoes", dataInicioAmpliada, dataFim), "cotacoes (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("cotacoeslistas", dataInicioAmpliada, dataFim), "cotacoeslistas (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("cotacoesfornecedores", dataInicioAmpliada, dataFim), "cotacoesfornecedores (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("cotacoesprodutos", dataInicioAmpliada, dataFim), "cotacoesprodutos (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("pedidoscompras", dataInicioAmpliada, dataFim), "pedidoscompras (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("pedidoscomprasitens", dataInicioAmpliada, dataFim), "pedidoscomprasitens (busca ampliada)"),
-      gsbGetSeguro(gsbGetRange("pedidoscomprasdestinacoes", dataInicioAmpliada, dataFim), "pedidoscomprasdestinacoes (busca ampliada)"),
+      gsbGetSeguro(lerTabela("solicitacoescompras", dataInicioAmpliada, dataFim), "solicitacoescompras (busca ampliada)"),
+      gsbGetSeguro(lerTabela("solicitacoescomprasitens", dataInicioAmpliada, dataFim), "solicitacoescomprasitens (busca ampliada)"),
+      gsbGetSeguro(lerTabela("cotacoes", dataInicioAmpliada, dataFim), "cotacoes (busca ampliada)"),
+      gsbGetSeguro(lerTabela("cotacoeslistas", dataInicioAmpliada, dataFim), "cotacoeslistas (busca ampliada)"),
+      gsbGetSeguro(lerTabela("cotacoesfornecedores", dataInicioAmpliada, dataFim), "cotacoesfornecedores (busca ampliada)"),
+      gsbGetSeguro(lerTabela("cotacoesprodutos", dataInicioAmpliada, dataFim), "cotacoesprodutos (busca ampliada)"),
+      gsbGetSeguro(lerTabela("pedidoscompras", dataInicioAmpliada, dataFim), "pedidoscompras (busca ampliada)"),
+      gsbGetSeguro(lerTabela("pedidoscomprasitens", dataInicioAmpliada, dataFim), "pedidoscomprasitens (busca ampliada)"),
+      gsbGetSeguro(lerTabela("pedidoscomprasdestinacoes", dataInicioAmpliada, dataFim), "pedidoscomprasdestinacoes (busca ampliada)"),
     ]);
     console.log(`Vínculo órfão detectado — refeita a busca inteira de ${dataInicioAmpliada} até ${dataFim} (${(headers||[]).length} solicitações)`);
   }
@@ -1073,6 +1124,14 @@ http.createServer(async (req, res) => {
           return copia;
         });
       }
+      const somenteMeus = escopoSomenteMeus(user, parsed.query);
+      const filialPedida = String(parsed.query.filial || "").toUpperCase();
+      function aplicarEscopo(lista) {
+        let out = lista || [];
+        if (FILIAIS_PERMITIDAS.includes(filialPedida)) out = out.filter((s) => !s.filialSigla || s.filialSigla === filialPedida);
+        if (somenteMeus) out = out.filter((s) => solicitacaoEhDoUsuario(s, user));
+        return removerDadosFinanceiros(out);
+      }
       const { inicio, fim } = parsed.query;
       if (inicio || fim) {
         // período customizado: busca ao vivo, não usa o cache padrão de 90 dias
@@ -1080,13 +1139,13 @@ http.createServer(async (req, res) => {
         const dFim = fim ? formatarDataGSB(new Date(fim + "T00:00:00")) : formatarDataGSB(new Date());
         try {
           const dados = await buscarHistorico(dInicio, dFim);
-          return json(res, 200, removerDadosFinanceiros(dados));
+          return json(res, 200, aplicarEscopo(dados));
         } catch (e) {
           return json(res, 500, { error: "Erro ao buscar histórico: " + e.message });
         }
       }
       if (Date.now() - new Date(HIST_CACHE.atualizadoEm || 0).getTime() > 30 * 60 * 1000) atualizarHistorico();
-      return json(res, 200, removerDadosFinanceiros(HIST_CACHE.data));
+      return json(res, 200, aplicarEscopo(HIST_CACHE.data));
     }
 
     // ── PAGAMENTOS EM ABERTO (semana atual) — só quem tem acesso financeiro ──
@@ -1250,7 +1309,7 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/solicitacoes") {
       const user = await getSession(req);
       if (!user) return json(res, 401, { error: "Não autenticado" });
-      const filtro = user.admin ? "" : `&user_id=eq.${user.id}`;
+      const filtro = escopoSomenteMeus(user, parsed.query) ? `&user_id=eq.${user.id}` : "";
       const cabecalhos = await sbGet("solicitacoescompras", `select=*${filtro}&order=criado_em.desc`);
       const ids = (cabecalhos || []).map((c) => c.id);
       let itens = [];
@@ -1565,8 +1624,21 @@ http.createServer(async (req, res) => {
     if (req.method === "GET" && p === "/admin/usuarios") {
       const user = await getSession(req);
       if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
-      const rows = await sbGet("usuarios", `select=id,nome,whatsapp,filial,status,admin,acesso_financeiro&order=nome.asc`);
+      const rows = await sbGet("usuarios", `select=id,nome,whatsapp,filial,status,admin,acesso_financeiro,id_funcionario_gsb&order=nome.asc`);
       return json(res, 200, rows || []);
+    }
+
+    // busca de funcionários do GSB pelo nome (para o admin vincular um usuário a um funcionário)
+    if (req.method === "GET" && p === "/admin/funcionarios-gsb") {
+      const user = await getSession(req);
+      if (!user || !user.admin) return json(res, 403, { error: "Somente admin" });
+      const q = tokensNomeSrv(parsed.query.q || "");
+      if (!q.length) return json(res, 200, []);
+      const achados = (CACHE.funcionarios || [])
+        .filter((f) => { const t = tokensNomeSrv(f.nome).join(" "); return q.every((w) => t.includes(w)); })
+        .slice(0, 15)
+        .map((f) => ({ id: f.idFuncionario, nome: f.nome }));
+      return json(res, 200, achados);
     }
 
     if (req.method === "PUT" && p.startsWith("/admin/usuarios/")) {
@@ -1578,6 +1650,7 @@ http.createServer(async (req, res) => {
       if (body.status) upd.status = body.status;
       if (typeof body.admin === "boolean") upd.admin = body.admin;
       if (typeof body.acesso_financeiro === "boolean") upd.acesso_financeiro = body.acesso_financeiro;
+      if (body.id_funcionario_gsb !== undefined) upd.id_funcionario_gsb = body.id_funcionario_gsb ? Number(body.id_funcionario_gsb) : null;
       await sbPatch("usuarios", upd, `id=eq.${id}`);
       return json(res, 200, { ok: true });
     }
